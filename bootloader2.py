@@ -1,6 +1,7 @@
 import can
 import time
 from typing import Optional
+from CAN_controller import SESSION_TOKEN as session_token
 
 # can_id = {
 #     "pc2vcu": 0x001,
@@ -8,7 +9,7 @@ from typing import Optional
 #     "0x19bytes": 0x019
 # }
 
-with can.Bus(interface='socketcan', channel='can0') as bus:
+def bootload(bus: can.Bus) -> dict:
 
     # def VCU_response(canid: int, data: Optional[list[int]] = None, timeout: Optional[float] = 0.3) -> bool:
     #     if data is not None:
@@ -52,7 +53,7 @@ with can.Bus(interface='socketcan', channel='can0') as bus:
             if target is None or bytes(msg.data) == target:
                 return True
 
-    def send_can(canid: int, data: list[int], delay: Optional[float] = 0.5):
+    def send_can(canid: int, data: list[int], delay: Optional[float] = 5):
         # id = can_id[canid] # ex. 0x001
 
         msg = can.Message(
@@ -67,9 +68,9 @@ with can.Bus(interface='socketcan', channel='can0') as bus:
     def heartbeat():
         # Heartbeat check (ex: HEY IM STILL HERE)
         send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
-        send_can(canid=0x001, data=[0x11] + session_token + [0x01])
+        send_can(canid=0x001, data=[0x11, 0x01] + session_token + [0x01])
 
-        if VCU_response(canid=0x002, data=[0x11] + session_token):
+        if VCU_response(canid=0x002, data=[0x11, 0x01] + session_token):
             print("VCU is still alive")
         else:
             raise Exception("server died")
@@ -96,12 +97,10 @@ with can.Bus(interface='socketcan', channel='can0') as bus:
     # Server ack thing idek im just tryna copy the trc
     server_ack = False
 
-    # while server_ack != True:
-    session_token = [0x01, 0x81, 0x16, 0x92, 0xAE]
 
     for i in range(0x00, 0x100):
         send_can(canid=0x001, data=[0x14, i], delay=0.0)
-        if VCU_response(canid=0x002, data=[0x14] + session_token, timeout=35):  # ~35ms
+        if VCU_response(canid=0x002, data=[0x14, 0x01] + session_token, timeout=35):  # ~35ms
             break
 
     heartbeat()
@@ -112,7 +111,7 @@ with can.Bus(interface='socketcan', channel='can0') as bus:
     challenge_0x17 = VCU_response(canid=0x002)
 
     send_can(canid=0x001, data=[0x17, 0x01, 0xE9, 0x30, 0x5A, 0x10, 0x01])
-    VCU_response(canid=0x002)
+    challenge_0x17_2 = VCU_response(canid=0x002)
 
     send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00], delay=130)
 
@@ -124,3 +123,5 @@ with can.Bus(interface='socketcan', channel='can0') as bus:
         print("IT FUCKING BOOTLOADED")
     else:
         raise Exception("FUCKKK")
+
+    return {"status:": "BOOTLOADING SUCCESS"}

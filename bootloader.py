@@ -1,5 +1,3 @@
-from os import WCONTINUED
-
 import can
 import time
 from typing import Optional
