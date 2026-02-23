@@ -110,12 +110,30 @@ VCU signals it is ready to receive the firmware flash.
 | 0x14 | `14 [00–FF]`                  | Boot confirmation poll  |
 | 0x17 | `17 01 B2 25 6A FC 00`        | Challenge frame 1       |
 | 0x17 | `17 01 E9 30 5A 10 01`        | Challenge frame 2       |
-| 0x0D | `0D 01 00 E0 00 00`           | Flash readiness check   |
+| 0x0D | `0D 01 00 E0 00 00`           | Transition check        |
+| 0x02 | `02 01`                       | Data transfer complete  |
+| 0x0B | `0B 01 00 E0 80 00 5E 7F`     | Readiness check         |
+| 0x18 | `18 01 F5 69 5A 48`           | Security check          |
+| 0x10 | `10 01 00 01 DE 00`           | Reset memory pointer    |
+| 0x04 | `04 01 00 C0 7F 00 80`        | Flash block read request          |
+| 0x0B | `0B 01 00 E0 80 00 5E 7F`     | Readiness check (repeated)        |
+| 0x18 | `18 01 B6 E0 C2 EC`           | Security check (constant variant) |
+| 0x10 | `10 01 00 00 00 7C`           | Memory pointer (second op)        |
+| 0x18 | `18 01 F5 69 5A 48`           | Security check (session-derived, repeated) |
+| 0x19 | `19 01 [4 bytes]`             | Flash loop challenge (two alternating variants per session) |
 
 ### VCU → Host (`0x002`)
 
-| Cmd  | Data                          | Description             |
-|------|-------------------------------|-------------------------|
-| 0x11 | `11 [Session Token]`          | Session alive echo      |
-| 0x14 | `14 [Session Token]`          | Boot confirmation echo  |
-| 0x0D | `0D 01`                       | Ready for flash         |
+| Cmd  | Data                          | Description                 |
+|------|-------------------------------|-----------------------------|
+| 0x11 | `11 [Session Token]`          | Session alive echo          |
+| 0x14 | `14 [Session Token]`          | Boot confirmation echo      |
+| 0x0D | `0D 01`                       | Ready for the next phase    |
+| 0x02 | `02 01 00 24 00 00`           | Data transfer complete echo |
+| 0x0B | `0B 01 01`                    | Readiness Echo              |
+| 0x18 | `18 01`                       | Security Response           |
+| 0x10 | `10 01 00 B9 6F FD`           | Reset memory pointer ACK    |
+| 0x10 | `10 01 80 74 C7 83`           | Memory pointer ACK (second op) |
+| 0x04 | `04 01 xx xx xx xx xx xx`     | Flash data stream           |
+| 0x04 | `04 01 00 00`                 | Flash stream end / ready for next block |
+| 0x19 | `19 01 01`                    | Flash loop challenge ACK    |

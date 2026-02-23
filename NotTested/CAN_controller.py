@@ -50,9 +50,9 @@ def send_can(canid: int, data: list[int], delay: Optional[float] = 5):
 def heartbeat():
     # Heartbeat check (ex: HEY IM STILL HERE)
     send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
-    send_can(canid=0x001, data=[0x11] + session_token + [0x01])
+    send_can(canid=0x001, data=[0x11] + SESSION_TOKEN + [0x01])
 
-    if VCU_response(canid=0x002, data=[0x11] + session_token):
+    if VCU_response(canid=0x002, data=[0x11] + SESSION_TOKEN):
         print("VCU is still alive")
     else:
         raise Exception("server died")

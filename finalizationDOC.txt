@@ -1,0 +1,159 @@
+"""
+Host to VCU
+02 data check
+
+VCU to Host
+02 data ack
+
+Host to VCU
+0D 01 00 C2 80 00
+
+VCU to Host
+0D 01
+
+Host to VCU
+0b readiness check
+
+VCU to Host
+0b readiness echo
+
+Host to VCU
+18 01 F5 69 5A 48 - security handshake
+
+VCU to Host
+18 01 xx xx security handshake response (doesn't matter what it is, just needs to be 18)
+
+Host to VCU
+0D 01 00 C1 00 80
+
+VCU to Host
+0D 01 ack
+
+Host to VCU
+10 01 00 01 DE 00 possible memory pointer thing
+
+VCU to Host
+10 01 xx xx memory ack (doesn't matter what it is, just needs to be 10)
+
+Host to VCU
+04 01 00 C0 7F 00 80 resetting stuff?
+
+VCU to Host
+04 01 stream of data 
+04 01 00 00 let host that stream is donw
+
+Host to VCU
+04 01 00 C1 00 00 80
+
+VCU to Host
+04 01 stream of data
+04 01 74 80 stream is done for now
+
+Host to VCU
+18 01 B6 E0 C2 EC - secuirity handshake
+
+VCU to Host
+18 01 ack - security echo
+
+Host to VCU
+0D 01 00 C1 00 00
+
+VCU to Host
+0D 01 ack
+
+Host to VCU
+10 01 00 00 00 7C
+
+VCU to Host
+10 01 80 74 C7 83
+
+Host to VCU
+18 01 F5 69 5A 48 again
+
+VCU to Host
+18 01 ack
+
+Host to VCU
+0D 01 00 C1 00 80
+
+VCU to Host
+0D 01 ack 
+
+Host to VCU
+10 01 00 01 DE 00 memory pointer thing again maybe
+
+VCU to Host
+10 01 xx xx memory ack (doesn't matter what it is, just needs to be 10)
+
+Host to VCU
+04 01 00 C0 7F 80 80 stream request
+
+VCU to Host
+04 01 stream of data
+04 01 00 00 stream done
+
+
+[HEARTBEAT LOOP - both heartbeat pairs below are one single cycle]
+
+-- heartbeat pair 1 --
+Host to VCU
+11 FF 00 00 00 00 00 heartbeat
+11 01 81 16 92 AE 01 session token
+
+VCU to Host
+11 01 81 16 92 AE session token ack
+
+Host to VCU
+19 01 C9 1E 2E CE - flash loop challenge (variant A)
+
+VCU to Host
+19 01 01 ack
+
+Host to VCU
+11 01 81 16 92 AE 00
+
+VCU to Host
+11 01 81 16 92 AE
+
+-- heartbeat pair 2 --
+Host to VCU
+11 FF 00 00 00 00 00 heartbeat
+11 01 81 16 92 AE 01 session token
+
+VCU to Host
+11 01 81 16 92 AE session token ack
+
+Host to VCU
+19 01 F5 69 5A 48 - flash loop challenge (variant B)
+
+VCU to Host
+19 01 01 ack
+
+Host to VCU
+11 01 81 16 92 AE 01
+
+VCU to Host
+11 01 81 16 92 AE
+
+-- end of one cycle --
+Host to VCU
+18 01 F5 69 5A 48 security handshake
+
+VCU to Host
+18 01 ack
+
+Host to VCU
+0D 01 00 C1 00 80
+
+VCU to Host
+0D 01 ack
+
+Host to VCU
+10 01 00 01 DE 00
+
+VCU to Host
+10 01 xx xx memory ack
+
+[repeats from heartbeat loop]
+
+"""
