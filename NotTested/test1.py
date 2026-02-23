@@ -40,3 +40,5 @@ def hex_length(path: str, expected_start: int = 0x00C10000) -> int:
         raise ValueError(f"Unexpected start address: 0x{min_addr:08X} (expected 0x{expected_start:08X})")
 
     return max_addr - min_addr + 1  # bytes to clear
+
+print(f"0x{hex_length(path="/Users/tanishqtyagi/TTC Reverse Protocl/Code/hex_files/main.hex"):X} ")
