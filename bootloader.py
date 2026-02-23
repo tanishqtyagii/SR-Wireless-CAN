@@ -40,6 +40,7 @@ def server_response(canid: int, data: Optional[list[int]] = None, timeout: float
         if remaining <= 0:
             return False
 
+        remaining = remaining
         msg = bus.recv(timeout=remaining)
         if msg is None:
             continue

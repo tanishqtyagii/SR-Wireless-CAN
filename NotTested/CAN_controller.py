@@ -9,7 +9,7 @@ bus = can.Bus(interface='socketcan', channel='can0')
 
 SESSION_TOKEN = [0x81, 0x16, 0x92, 0xAE] # dont change.
 
-def VCU_response(canid: int, data: Optional[list[int]] = None, timeout: float = 0.3) -> bool:
+def VCU_response(canid: int, data: Optional[list[int]] = None, timeout: float = 0.5) -> bool:
     if not hasattr(VCU_response, "seen"):
         VCU_response.seen = []  # list of (arbitration_id, data_bytes)
 
