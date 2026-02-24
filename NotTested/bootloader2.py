@@ -1,7 +1,8 @@
 import can
 import time
 from typing import Optional
-from NotTested.CAN_controller import SESSION_TOKEN as session_token
+from NotTested.CAN_controller import session_token
+from NotTested.CAN_controller import security_key
 
 # can_id = {
 #     "pc2vcu": 0x001,
