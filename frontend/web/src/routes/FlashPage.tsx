@@ -306,7 +306,7 @@ export default function FlashPage() {
 
               {vcuIsBusy && !isBusy && (
                 <div className="mb-4">
-                  <InlineAlert variant="warning" message="VCU is currently flashing from another session. All operations are locked until it returns to idle." />
+                  <InlineAlert variant="warning" message="VCU is currently flashing. All operations are locked until it returns to idle." />
                 </div>
               )}
 
