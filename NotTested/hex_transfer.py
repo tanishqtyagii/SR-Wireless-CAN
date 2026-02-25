@@ -1,12 +1,13 @@
 import can
 import time
+import intelhex
 from typing import Optional
 from NotTested.CAN_controller import session_token
 from NotTested.CAN_controller import VCU_response
 from NotTested.CAN_controller import send_can
 from NotTested.CAN_controller import heartbeat
 from NotTested.CAN_controller import flash_kernel
-from NotTested.CAN_controller import parse_hex_coverage, build_erase_commands_from_blocks, erase_plan_to_can_frames
+from NotTested.CAN_controller import hex_clear_span, erase_plan_0x0C_frames
 
 # ALL STAGES
 # 0x00C10000
@@ -17,9 +18,13 @@ def flash_hex(bus: can.Bus, hex_path: str) -> dict:
 
 
     # Clear flash memory from C10000
-    cov = parse_hex_coverage(hex_path, erase_block=0x10000)
-    plan = build_erase_commands_from_blocks(cov.touched_blocks, erase_block=0x10000)
-    erase_plan_to_can_frames(plan, send_can=send_can, VCU_response=VCU_response, erase_timeout=3.0)
+    erase_start, length = hex_clear_span(hex_path)
+    frames = erase_plan_0x0C_frames(erase_start, length)
+    for frame in frames:
+        send_can(canid=0x001, data=frame)
+        if not VCU_response(canid=0x002, prefix=[0x0C, 0x01, 0x01]):
+            raise Exception("Flash erase failed")
+
     print("Memory clear success les gooo")
 
     # Set pointer to flash memory

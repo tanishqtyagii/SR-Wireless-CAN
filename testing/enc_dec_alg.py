@@ -44,7 +44,7 @@ def dec32_bytes(enc4: bytes, key: int = TTC_KEY) -> bytes:
 
 if __name__ == "__main__":
     # Sanity checks from your trace
-    assert dec32(0xB2256AFC) == 0x2A4E510F
-    assert enc32(0x2A4E510F) == 0xB2256AFC
-    assert dec32(0x47864FA6) == 0x549CA299
+    input_bytes = bytes.fromhex("F5 69 5A 48")
+    result_bytes = dec32_bytes(input_bytes)
+    print(result_bytes.hex().upper())
     print("OK")

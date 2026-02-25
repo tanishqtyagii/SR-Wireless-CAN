@@ -8,7 +8,12 @@ global VCU_state
 bus = can.Bus(interface='socketcan', channel='can0')
 
 session_token = [0x81, 0x16, 0x92, 0xAE] # dont change.
-security_key = [0xF5, 0x69, 0x5A, 0x48]
+
+key_0x17 = [0x17, 0x01, 0xF5, 0x69, 0x5A, 0x48]
+key_0x17_2 = [0x17, 0x01, 0x78, 0x52, 0x25, 0x6C]
+
+key_0x19_1 = [0x19, 0x01, 0xF5, 0x69, 0x5A, 0x48]
+key_0x19_2 = [0x19, 0x01, 0xC9, 0x1E, 0x2E, 0xCE]
 
 def VCU_response(canid: int, data: Optional[list[int]] = None, prefix: Optional[list[int]] = None, timeout: float = 0.5) -> bool:
     if not hasattr(VCU_response, "seen"):
@@ -63,92 +68,59 @@ def send_can(canid: int, data: list[int], delay: Optional[float] = 5):
 def heartbeat():
     # Heartbeat check (ex: HEY IM STILL HERE)
     send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
-    send_can(canid=0x001, data=[0x11] + SESSION_TOKEN + [0x01])
+    send_can(canid=0x001, data=[0x11] + session_token + [0x01])
 
-    if VCU_response(canid=0x002, data=[0x11] + SESSION_TOKEN):
+    if VCU_response(canid=0x002, data=[0x11] + session_token):
         print("VCU is still alive")
     else:
         raise Exception("server died")
 
 
-@dataclass(frozen=True)
-class HexCoverage:
-    min_addr: int
-    max_addr: int
-    touched_blocks: Tuple[int, ...]
+def hex_clear_span(hex_path: str, erase_block: int = 0x10000) -> tuple[int, int]:
+    """
+    Returns (erase_start_addr, length_to_clear) based on the HEX's highest/lowest used addresses.
+    We align the start down to an erase_block boundary (common: 64KiB).
+    """
+    ih = IntelHex(hex_path)
 
-def parse_hex_coverage(hex_path: str, erase_block: int = 0x10000) -> HexCoverage:
-    upper = 0
-    min_addr = None
-    max_addr = None
-    touched = set()
-
-    with open(hex_path, "r", encoding="utf-8", errors="ignore") as f:
-        for raw in f:
-            line = raw.strip()
-            if not line or not line.startswith(":"):
-                continue
-
-            ll = int(line[1:3], 16)
-            addr16 = int(line[3:7], 16)
-            rectype = int(line[7:9], 16)
-
-            if rectype == 0x04:
-                upper = int(line[9:13], 16)
-                continue
-
-            if rectype == 0x00 and ll:
-                base = (upper << 16) | addr16
-                end = base + ll - 1
-
-                if min_addr is None or base < min_addr:
-                    min_addr = base
-                if max_addr is None or end > max_addr:
-                    max_addr = end
-
-                blk_start = base // erase_block
-                blk_end = end // erase_block
-                for b in range(blk_start, blk_end + 1):
-                    touched.add(b * erase_block)
-                continue
-
-            if rectype == 0x01:
-                break
-
+    min_addr = ih.minaddr()
+    max_addr = ih.maxaddr()
     if min_addr is None or max_addr is None:
-        raise ValueError("No data records found in Intel HEX")
+        raise ValueError("HEX has no data records")
 
-    return HexCoverage(min_addr=min_addr, max_addr=max_addr, touched_blocks=tuple(sorted(touched)))
+    erase_start = min_addr & ~(erase_block - 1)
+    length_to_clear = (max_addr - erase_start) + 1
+    return erase_start, length_to_clear
 
-def build_erase_commands_from_blocks(
-    touched_blocks: Iterable[int],
-    erase_block: int = 0x10000,
-) -> List[Tuple[int, int]]:
-    return [(blk, erase_block) for blk in touched_blocks]
 
-def erase_plan_to_can_frames(
-    plan: Iterable[Tuple[int, int]],
-    send_can,
-    VCU_response,
-    erase_timeout: float = 3.0,   # IMPORTANT: trace shows >0.5s
-):
-    for addr, length in plan:
-        l = length - 1
-        frame = [
-            0x0C, 0x01,
-            (addr >> 24) & 0xFF,
-            (addr >> 16) & 0xFF,
-            (addr >> 8) & 0xFF,
-            addr & 0xFF,
-            (l >> 8) & 0xFF,
-            l & 0xFF,
-        ]
-        send_can(canid=0x001, data=frame)
+def erase_plan_0x0C_frames(erase_start: int, length_to_clear: int, session: int = 0x01,
+                           chunk: int = 0x10000) -> list[list[int]]:
+    """
+    Builds 0x0C erase frames of the form:
+      [0x0C, session, addr32_be(4 bytes), (len-1)_be(2 bytes)]
+    Split into chunk-sized erases (default 0x10000), final chunk is remainder.
+    """
+    if length_to_clear <= 0:
+        return []
 
-        # safest is prefix-match; if your VCU_response is exact-match, change it to prefix-match internally
-        ok = VCU_response(0x002, [0x0C, 0x01, 0x01], timeout=erase_timeout)
-        if not ok:
-            raise RuntimeError(f"Erase timeout for addr=0x{addr:08X} len=0x{length:X}")
+    frames: list[list[int]] = []
+    addr = erase_start
+    remaining = length_to_clear
+
+    while remaining > 0:
+        this_len = min(remaining, chunk)
+        len_m1 = this_len - 1  # protocol expects (len-1)
+
+        frames.append([
+            0x0C, session,
+            (addr >> 24) & 0xFF, (addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF,
+            (len_m1 >> 8) & 0xFF, len_m1 & 0xFF,  # big-endian (matches your DE 7F example -> 0xDE80)
+        ])
+
+        addr += this_len
+        remaining -= this_len
+
+    return frames
 
 
 
@@ -7552,9 +7524,313 @@ def flash_kernel() -> dict:
         raise RuntimeError('Expected VCU response not seen: trace line 4401 (0x002)')
 
     send_can(canid=0x001, data=[0x14, 0x01])
-    if not VCU_response(canid=0x002, data=session_token):
+    if not VCU_response(canid=0x002, data=[0x14, 0x01] + session_token):
         raise RuntimeError('Expected VCU response not seen: trace line 4402 (0x002)')
 
+    #  0x17 auth (changing from this point on)
+    send_can(canid=0x001, data=[0x17, 0x01] + key_0x17 + [0x00])
+    if not VCU_response(canid=0x002, prefix=[0x17, 0x01]):
+        raise RuntimeError('Expected VCU response not seen: trace line 4403 (0x002)')
+
+    send_can(canid=0x001, data=key_0x17_2 + [0x01])
+    if not VCU_response(canid=0x002, prefix=[0x17, 0x01]):
+        raise RuntimeError('Expected VCU response not seen: trace line 4404 (0x002)')
+
+    # Heartbeat
+    send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00], delay=23)
+    send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
+    send_can(canid=0x001, data=[0x11, 0x01] + session_token + [0x01], delay=23)
+    if not VCU_response(canid=0x002, data=[0x11, 0x01] + session_token):
+        raise RuntimeError('Expected VCU response not seen: trace line 4405 (0x002)')
+
+    # 0x19 auth
+    send_can(canid=0x001, data=key_0x19_1)
+    if not VCU_response(canid=0x002, data=[0x19, 0x01, 0x01]):
+        raise RuntimeError('Expected VCU response not seen: trace line 4406 (0x002)')
+
+    send_can(canid=0x001, data=[0x11, 0x01] + session_token + [0x01])
+    if not VCU_response(canid=0x002, data=[0x11, 0x01] + session_token):
+        raise RuntimeError('Expected VCU response not seen: trace line 4407 (0x002)')
+
+    # Reading existing flash
+
+    # 4415) 20262.0  ID=0x001 DLC=7
+    send_can(canid=0x001, data=[0x04, 0x01, 0x00, 0xC0, 0x7F, 0x00, 0x80])
+
+    # 4416) 20262.8  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4416 (0x002)")
+
+    # 4417) 20263.0  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4417 (0x002)")
+
+    # 4418) 20263.3  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x0A, 0x02, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4418 (0x002)")
+
+    # 4419) 20263.5  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4419 (0x002)")
+
+    # 4420) 20263.8  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4420 (0x002)")
+
+    # 4421) 20264.0  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0xF4, 0x01, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4421 (0x002)")
+
+    # 4422) 20264.3  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4422 (0x002)")
+
+    # 4423) 20264.6  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4423 (0x002)")
+
+    # 4424) 20264.8  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4424 (0x002)")
+
+    # 4425) 20265.0  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4425 (0x002)")
+
+    # 4426) 20265.3  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4426 (0x002)")
+
+    # 4427) 20265.5  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4427 (0x002)")
+
+    # 4428) 20265.8  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4428 (0x002)")
+
+    # 4429) 20266.0  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4429 (0x002)")
+
+    # 4430) 20266.3  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4430 (0x002)")
+
+    # 4431) 20266.6  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4431 (0x002)")
+
+    # 4432) 20266.8  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4432 (0x002)")
+
+    # 4433) 20267.1  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4433 (0x002)")
+
+    # 4434) 20267.3  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4434 (0x002)")
+
+    # 4435) 20267.6  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4435 (0x002)")
+
+    # 4436) 20267.8  ID=0x002 DLC=8
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4436 (0x002)")
+
+    # 4437) 20268.0  ID=0x002 DLC=4
+    if not VCU_response(canid=0x002, data=[0x04, 0x01, 0x00, 0x00], timeout=0.700):
+        raise RuntimeError("Expected VCU response not seen: trace line 4437 (0x002)")
+
+
+    # READING EXISTING ACTUAL HEX (CHANGE LATER)
+    # Lines 4438 - 4495 Are internal redundancy checks for the existing firmware, skipping for now
+    time.sleep(0.158)
+
+    # Starting at 4496
+    send_can(canid=0x001, data=[0x11, 0x0FF, 0x00, 0x00, 0x00, 0x00, 0x00], delay=5)
+    send_can(canid=0x001, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE, 0x01])
+    if not VCU_response(canid=0x002, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE, 0x01]):
+        raise RuntimeError('Expected VCU response not seen: trace line 4496 (0x002)')
+
+    # AUTH
+    send_can(canid=0x001, data=key_0x19_2)
+    if not VCU_response(canid=0x002, data=[0x19, 0x01, 0x01]):
+        raise RuntimeError('Expected VCU response not seen: trace line 4497 (0x002)')
+
+    send_can(canid=0x001, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE, 0x00])
+    if not VCU_response(canid=0x002, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE, 0x01]):
+        raise RuntimeError('Expected VCU response not seen: trace line 4498 (0x002)')
+
+    time.sleep(24) # idk the trace waited here
+
+    # heartbeat
+    send_can(canid=0x001, data=[0x11, 0x0FF, 0x00, 0x00, 0x00, 0x00, 0x00])
+    send_can(canid=0x001, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE, 0x00])
+    if not VCU_response(canid=0x002, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE, 0x00]):
+        raise RuntimeError('Expected VCU response not seen: trace line 4499 (0x002)')
+
+    # Auth
+    send_can(canid=0x001, data=key_0x19_1)
+    if not VCU_response(canid=0x002, data=[0x19, 0x01, 0x01]):
+        raise RuntimeError('Expected VCU response not seen: trace line 4500 (0x002)')
+
+    sendcan(canid=0x001, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE, 0x01])
+    if not VCU_response(canid=0x002, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE]):
+        raise RuntimeError('Expected VCU response not seen: trace line 4501 (0x002)')
+
+    # Assumptions copied from your trace:
+    # - Everything with CAN ID 0x001 is what you send (send_can)
+    # - Everything with CAN ID 0x002 is what you wait for (VCU_response)
+    # Note: in this trace the VCU replies with: [0x11, 0x01] + session_token (NOT [0x11] + session_token)
+
+    session_token = [0x81, 0x16, 0x92, 0xAE]  # dont change
+
+    # ----------------------------
+    # Lines 4510–4515 (CRC seed + pointer + MemCRC)
+    # (per your request: comments only, showing what goes here)
+    # 4510) 0001: 18 01 F5 69 5A 48
+    # send_can(canid=0x001, data=[0x18, 0x01, 0xF5, 0x69, 0x5A, 0x48])  # 0x18: set CRC init/seed (encoded)
+    # 4511) 0002: 18 01
+    # VCU_response(canid=0x002, data=[0x18, 0x01])
+
+    # 4512) 0001: 0D 01 00 C1 00 80
+    # send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xC1, 0x00, 0x80])  # 0x0D: set pointer/address (0xC10080)
+    # 4513) 0002: 0D 01
+    # VCU_response(canid=0x002, data=[0x0D, 0x01])
+
+    # 4514) 0001: 10 01 00 01 DE 00
+    # send_can(canid=0x001, data=[0x10, 0x01, 0x00, 0x01, 0xDE, 0x00])  # 0x10: MemCRC length = 0x01DE00
+    # 4515) 0002: 10 01 BE 55 B3 7D
+    # VCU_response(canid=0x002, data=[0x10, 0x01, 0xBE, 0x55, 0xB3, 0x7D])
+    # ----------------------------
+
+    # 4516) 0001: 11 FF 00 00 00 00 00
+    send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
+
+    # 4517) 0001: 11 01 81 16 92 AE 01
+    send_can(canid=0x001, data=[0x11, 0x01] + session_token + [0x01])
+
+    # 4518) 0002: 11 01 81 16 92 AE
+    if not VCU_response(canid=0x002, data=[0x11, 0x01] + session_token):
+        raise Exception("Expected 4518: 11 01 <token>")
+
+    # 4519) 0001: 19 01 C9 1E 2E CE
+    send_can(canid=0x001, data=[0x19, 0x01, 0xC9, 0x1E, 0x2E, 0xCE])
+
+    # 4520) 0002: 19 01 01
+    if not VCU_response(canid=0x002, data=[0x19, 0x01, 0x01]):
+        raise Exception("Expected 4520: 19 01 01")
+
+    # 4521) 0001: 11 01 81 16 92 AE 00
+    send_can(canid=0x001, data=[0x11, 0x01] + session_token + [0x00])
+
+    # 4522) 0002: 11 01 81 16 92 AE
+    if not VCU_response(canid=0x002, data=[0x11, 0x01] + session_token):
+        raise Exception("Expected 4522: 11 01 <token>")
+
+    # 4523) 0001: 11 FF 00 00 00 00 00
+    send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
+
+    # 4524) 0001: 11 01 81 16 92 AE 01
+    send_can(canid=0x001, data=[0x11, 0x01] + session_token + [0x01])
+
+    # 4525) 0002: 11 01 81 16 92 AE
+    if not VCU_response(canid=0x002, data=[0x11, 0x01] + session_token):
+        raise Exception("Expected 4525: 11 01 <token>")
+
+    # 4526) 0001: 19 01 F5 69 5A 48
+    send_can(canid=0x001, data=[0x19, 0x01, 0xF5, 0x69, 0x5A, 0x48])
+
+    # 4527) 0002: 19 01 01
+    if not VCU_response(canid=0x002, data=[0x19, 0x01, 0x01]):
+        raise Exception("Expected 4527: 19 01 01")
+
+    # 4528) 0001: 11 01 81 16 92 AE 01
+    send_can(canid=0x001, data=[0x11, 0x01] + session_token + [0x01])
+
+    # 4529) 0002: 11 01 81 16 92 AE
+    if not VCU_response(canid=0x002, data=[0x11, 0x01] + session_token):
+        raise Exception("Expected 4529: 11 01 <token>")
+
+    # ----------------------------
+    # Lines 4530–4535 (CRC seed + pointer + MemCRC)
+    # (per your request: comments only, showing what goes here)
+    # 4530) 0001: 18 01 F5 69 5A 48
+    # send_can(canid=0x001, data=[0x18, 0x01, 0xF5, 0x69, 0x5A, 0x48])  # 0x18: set CRC init/seed (encoded)
+    # 4531) 0002: 18 01
+    # VCU_response(canid=0x002, data=[0x18, 0x01])
+
+    # 4532) 0001: 0D 01 00 C1 00 80
+    # send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xC1, 0x00, 0x80])  # 0x0D: set pointer/address (0xC10080)
+    # 4533) 0002: 0D 01
+    # VCU_response(canid=0x002, data=[0x0D, 0x01])
+
+    # 4534) 0001: 10 01 00 01 DE 00
+    # send_can(canid=0x001, data=[0x10, 0x01, 0x00, 0x01, 0xDE, 0x00])  # 0x10: MemCRC length = 0x01DE00
+    # 4535) 0002: 10 01 BE 55 B3 7D
+    # VCU_response(canid=0x002, data=[0x10, 0x01, 0xBE, 0x55, 0xB3, 0x7D])
+    # ----------------------------
+
+    # 4536) 0001: 11 FF 00 00 00 00 00
+    send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
+
+    # 4537) 0001: 11 01 81 16 92 AE 01
+    send_can(canid=0x001, data=[0x11, 0x01] + session_token + [0x01])
+
+    # 4538) 0002: 11 01 81 16 92 AE
+    if not VCU_response(canid=0x002, data=[0x11, 0x01] + session_token):
+        raise Exception("Expected 4538: 11 01 <token>")
+
+    # 4539) 0001: 19 01 C9 1E 2E CE
+    send_can(canid=0x001, data=[0x19, 0x01, 0xC9, 0x1E, 0x2E, 0xCE])
+
+    # 4540) 0002: 19 01 01
+    if not VCU_response(canid=0x002, data=[0x19, 0x01, 0x01]):
+        raise Exception("Expected 4540: 19 01 01")
+
+    # 4541) 0001: 11 01 81 16 92 AE 00
+    send_can(canid=0x001, data=[0x11, 0x01] + session_token + [0x00])
+
+    # 4542) 0002: 11 01 81 16 92 AE
+    if not VCU_response(canid=0x002, data=[0x11, 0x01] + session_token):
+        raise Exception("Expected 4542: 11 01 <token>")
+
+    # 4543) 0001: 11 FF 00 00 00 00 00
+    send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
+
+    # 4544) 0001: 11 01 81 16 92 AE 01
+    send_can(canid=0x001, data=[0x11, 0x01] + session_token + [0x01])
+
+    # 4545) 0002: 11 01 81 16 92 AE
+    if not VCU_response(canid=0x002, data=[0x11, 0x01] + session_token):
+        raise Exception("Expected 4545: 11 01 <token>")
+
+    # 4546) 0001: 19 01 F5 69 5A 48
+    send_can(canid=0x001, data=[0x19, 0x01, 0xF5, 0x69, 0x5A, 0x48])
+
+    # 4547) 0002: 19 01 01
+    if not VCU_response(canid=0x002, data=[0x19, 0x01, 0x01]):
+        raise Exception("Expected 4547: 19 01 01")
+
+    # 4548) 0001: 11 01 81 16 92 AE 01
+    send_can(canid=0x001, data=[0x11, 0x01] + session_token + [0x01])
+
+    # 4549) 0002: 11 01 81 16 92 AE
+    if not VCU_response(canid=0x002, data=[0x11, 0x01] + session_token):
+        raise Exception("Expected 4549: 11 01 <token>")
+
+
+    # session_token = [0x81, 0x16, 0x92, 0xAE] # dont change.
+    #
+    # key_0x17 = [0x17, 0x01, 0xF5, 0x69, 0x5A, 0x48]
+    # key_0x17_2 = [0x17, 0x01, 0x78, 0x52, 0x25, 0x6C]
+    #
+    # key_0x19_1 = [0x19, 0x01, 0xF5, 0x69, 0x5A, 0x48]
+    # key_0x19_2 = [0x19, 0x01, 0xC9, 0x1E, 0x2E, 0xCE]
 
 
     print("flashing kernel success")
