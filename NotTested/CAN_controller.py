@@ -1,8 +1,9 @@
 import can
-from NotTested.bootLoading import bootload
 import time
+import sys
+import types
+from intelhex import IntelHex
 from typing import Iterable, List, Tuple, Optional
-
 global VCU_state
 
 bus = can.Bus(interface='socketcan', channel='can0')
@@ -45,7 +46,7 @@ def VCU_response(canid: int, data: Optional[list[int]] = None, prefix: Optional[
             return True
 
 
-def send_can(canid: int, data: list[int], delay: Optional[float] = 5):
+def send_can(canid: int, data: list[int], delay: Optional[float] = 2):
     """
     Sends data (list) via canid (int), optional delay between messages (default 5ms)
     :param canid:
@@ -70,10 +71,10 @@ def heartbeat():
     send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
     send_can(canid=0x001, data=[0x11] + session_token + [0x01])
 
-    if VCU_response(canid=0x002, data=[0x11] + session_token):
+    if VCU_response(canid=0x002, data=[0x11, 0x01] + session_token):
         print("VCU is still alive")
     else:
-        raise Exception("server died")
+        print("its dead")
 
 
 def hex_clear_span(hex_path: str, erase_block: int = 0x10000) -> tuple[int, int]:
@@ -121,7 +122,6 @@ def erase_plan_0x0C_frames(erase_start: int, length_to_clear: int, session: int 
         remaining -= this_len
 
     return frames
-
 
 
 def flash_kernel() -> dict:
@@ -7835,4 +7835,17 @@ def flash_kernel() -> dict:
 
     print("flashing kernel success")
     return {"status": "SUCCESS"}
-bus.shutdown()
+
+
+if __name__ == "__main__":
+    from NotTested.bootloader2 import bootload
+    from NotTested.hex_transfer import flash_hex
+    from NotTested.finalization import finalize
+
+    bootload(bus=bus)
+    print("Moving on to flashing!")
+    time.sleep(1)
+    flash_hex(bus=bus, hex_path="231_80kw.hex")
+    finalize()
+    print("IT WORKEDDDDD :(")
+    bus.shutdown()

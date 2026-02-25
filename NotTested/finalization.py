@@ -78,7 +78,7 @@ def finalize():
 
     # HEARTBEAT LOOP
     # each full cycle = pair 1 + pair 2 + security + 0D + 10
-    while True:
+    for i in range(3):
 
         # -- heartbeat pair 1 --
         heartbeat()

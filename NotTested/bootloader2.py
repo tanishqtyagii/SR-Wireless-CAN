@@ -1,9 +1,6 @@
 import can
 import time
 from typing import Optional
-from NotTested.CAN_controller import session_token
-from NotTested.CAN_controller import security_key
-from CAN_controller import session_token
 
 # can_id = {
 #     "pc2vcu": 0x001,
@@ -12,7 +9,7 @@ from CAN_controller import session_token
 # }
 
 def bootload(bus: can.Bus) -> dict:
-
+    session_token = [0x81, 0x16, 0x92, 0xAE]  # dont change.
     # def VCU_response(canid: int, data: Optional[list[int]] = None, timeout: Optional[float] = 0.3) -> bool:
     #     if data is not None:
     #         target = bytes(data)
@@ -102,7 +99,7 @@ def bootload(bus: can.Bus) -> dict:
 
     for i in range(0x00, 0x100):
         send_can(canid=0x001, data=[0x14, i], delay=0.0)
-        if VCU_response(canid=0x002, data=[0x14, 0x01] + session_token, timeout=35):  # ~35ms
+        if VCU_response(canid=0x002, data=[0x14, 0x01] + session_token, timeout=0.035):  # ~35ms
             break
 
     heartbeat()
