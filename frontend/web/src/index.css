@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply font-sans antialiased text-sm;
+  }
+
+  :root {
+    --theme-bg: #f8fafc;
+    --theme-panel: #ffffff;
+    --theme-panel-hover: #f1f5f9;
+    --theme-text: #0f172a;
+    --theme-text-muted: #64748b;
+    --theme-border: #e2e8f0;
+    --theme-primary: #0f172a;
+    --theme-primary-hover: #334155;
+    --theme-danger: #ef4444;
+    --theme-danger-hover: #dc2626;
+    --theme-success: #10b981;
+    --theme-warning: #f59e0b;
+    --theme-overlay: rgba(255, 255, 255, 0.4);
+    --theme-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+
+    --surface: #ffffff;
+    --canvas: #f8fafc;
+    --panel: #ffffff;
+
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-tertiary: #94a3b8;
+
+    --border-default: #e2e8f0;
+    --border-subtle: #f1f5f9;
+    --border-strong: #cbd5f5;
+
+    --action: #2563eb;
+    --action-hover: #1d4ed8;
+    --danger: #ef4444;
+    --success: #10b981;
+    --warning: #f59e0b;
+  }
+
+  .dark {
+    --theme-bg: #09090b;
+    --theme-panel: #18181b;
+    --theme-panel-hover: #27272a;
+    --theme-text: #f4f4f5;
+    --theme-text-muted: #a1a1aa;
+    --theme-border: #27272a;
+    --theme-primary: #fafafa;
+    --theme-primary-hover: #e4e4e7;
+    --theme-danger: #991b1b;
+    --theme-danger-hover: #7f1d1d;
+    --theme-success: #065f46;
+    --theme-warning: #b45309;
+    --theme-overlay: rgba(0, 0, 0, 0.6);
+    --theme-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.5), 0 2px 4px -2px rgb(0 0 0 / 0.5);
+
+    --surface: #0b0f14;
+    --canvas: #090b10;
+    --panel: #111827;
+
+    --text-primary: #f8fafc;
+    --text-secondary: #cbd5f5;
+    --text-tertiary: #94a3b8;
+
+    --border-default: #1f2937;
+    --border-subtle: #111827;
+    --border-strong: #334155;
+
+    --action: #3b82f6;
+    --action-hover: #2563eb;
+    --danger: #f87171;
+    --success: #34d399;
+    --warning: #fbbf24;
+  }
+
+  body {
+    background-color: var(--canvas);
+    color: var(--text-primary);
+  }
+}

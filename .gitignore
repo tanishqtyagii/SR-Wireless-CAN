@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+
+db/vcu.db
+db/vcu.db-shm
+db/vcu.db-wal
+db/uploads/
