@@ -104,4 +104,4 @@ def erase_plan_to_can_frames(
         # You mentioned you see the VCU ack after some time.
         VCU_response(0x002, [0x0C, 0x01, 0x01], timeout=0.5)
 
-print(parse_hex_coverage("hex_files/main.hex"))
+print(parse_hex_coverage("../hex_files/main.hex"))
