@@ -1,6 +1,5 @@
 import can
-from bootloader2 import bootload
-from dataclasses import dataclass
+from NotTested.bootLoading import bootload
 import time
 from typing import Iterable, List, Tuple, Optional
 
@@ -11,12 +10,12 @@ bus = can.Bus(interface='socketcan', channel='can0')
 session_token = [0x81, 0x16, 0x92, 0xAE] # dont change.
 security_key = [0xF5, 0x69, 0x5A, 0x48]
 
-
-def VCU_response(canid: int, data: Optional[list[int]] = None, timeout: float = 0.5) -> bool:
+def VCU_response(canid: int, data: Optional[list[int]] = None, prefix: Optional[list[int]] = None, timeout: float = 0.5) -> bool:
     if not hasattr(VCU_response, "seen"):
         VCU_response.seen = []  # list of (arbitration_id, data_bytes)
 
     target = None if data is None else bytes(data)
+    target_prefix = None if prefix is None else bytes(prefix)
     end = time.monotonic() + timeout
 
     while True:
@@ -33,8 +32,13 @@ def VCU_response(canid: int, data: Optional[list[int]] = None, timeout: float = 
         if msg.arbitration_id != canid:
             continue
 
-        if target is None or bytes(msg.data) == target:
+        if target is not None and bytes(msg.data) == target:
             return True
+        if target_prefix is not None and bytes(msg.data).startswith(target_prefix):
+            return True
+        if target is None and target_prefix is None:
+            return True
+
 
 def send_can(canid: int, data: list[int], delay: Optional[float] = 5):
     """
@@ -54,6 +58,7 @@ def send_can(canid: int, data: list[int], delay: Optional[float] = 5):
     )
     bus.send(msg)
     time.sleep(delay / 1000)  # ms -> s
+
 
 def heartbeat():
     # Heartbeat check (ex: HEY IM STILL HERE)

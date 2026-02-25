@@ -1,5 +1,5 @@
 import time
-from NotTested.CAN_controller import send_can, VCU_response, SESSION_TOKEN, bus
+from NotTested.CAN_controller import send_can, VCU_response, heartbeat, SESSION_TOKEN, bus
 
 # session-derived, vary per run — no idea how they're computed yet
 SECURITY_KEY  = [0xF5, 0x69, 0x5A, 0x48]
@@ -29,20 +29,6 @@ def security_handshake(key=None):
     if not VCU_response(canid=0x002, data=[0x18, 0x01]):
         raise Exception("security handshake failed")
 
-
-def heartbeat_pair(challenge: list[int], end_byte: int):
-    send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
-    send_can(canid=0x001, data=[0x11, 0x01] + SESSION_TOKEN + [0x01])
-    if not VCU_response(canid=0x002, data=[0x11, 0x01] + SESSION_TOKEN):
-        raise Exception("heartbeat ack failed")
-
-    send_can(canid=0x001, data=[0x19, 0x01] + challenge)
-    if not VCU_response(canid=0x002, data=[0x19, 0x01, 0x01]):
-        raise Exception("19 challenge failed")
-
-    send_can(canid=0x001, data=[0x11, 0x01] + SESSION_TOKEN + [end_byte])
-    if not VCU_response(canid=0x002, data=[0x11, 0x01] + SESSION_TOKEN):
-        raise Exception("heartbeat close failed")
 
 
 def finalize():
@@ -98,7 +84,7 @@ def finalize():
         raise Exception("0D failed")
 
     send_can(canid=0x001, data=[0x10, 0x01, 0x00, 0x01, 0xDE, 0x00])
-    if not VCU_response(canid=0x002, timeout=1.0):  # doesn't matter what it is, just needs to be 10
+    if not VCU_response(canid=0x002, prefix=[0x10, 0x01], timeout=1.0):  # doesn't matter what it is, just needs to be 10
         raise Exception("10 memory pointer failed")
 
     # 04 stream 3
@@ -112,10 +98,10 @@ def finalize():
     while True:
 
         # -- heartbeat pair 1 --
-        heartbeat_pair(challenge=CHALLENGE_A, end_byte=0x00)
+        heartbeat()
 
         # -- heartbeat pair 2 --
-        heartbeat_pair(challenge=CHALLENGE_B, end_byte=0x01)
+        heartbeat()
 
         # -- end of cycle --
         security_handshake()
@@ -125,5 +111,5 @@ def finalize():
             raise Exception("0D in heartbeat loop failed")
 
         send_can(canid=0x001, data=[0x10, 0x01, 0x00, 0x01, 0xDE, 0x00])
-        if not VCU_response(canid=0x002, timeout=1.0):  # doesn't matter what it is, just needs to be 10
+        if not VCU_response(canid=0x002, prefix=[0x10, 0x01], timeout=1.0):  # doesn't matter what it is, just needs to be 10
             raise Exception("10 in heartbeat loop failed")
