@@ -1,8 +1,12 @@
 import can
 import time
 from typing import Optional
+<<<<<<< Updated upstream:NotTested/bootloader2.py
 from NotTested.CAN_controller import session_token
 from NotTested.CAN_controller import security_key
+=======
+from CAN_controller import session_token
+>>>>>>> Stashed changes:bootloader2.py
 
 # can_id = {
 #     "pc2vcu": 0x001,
