@@ -1,11 +1,8 @@
 import time
-from NotTested.CAN_controller import send_can, VCU_response, heartbeat, SESSION_TOKEN, bus
+from NotTested.CAN_controller import send_can, VCU_response, heartbeat, bus, key_0x17
 
-# session-derived, vary per run — no idea how they're computed yet
-SECURITY_KEY  = [0xF5, 0x69, 0x5A, 0x48]
-CHALLENGE_A   = [0xC9, 0x1E, 0x2E, 0xCE]
-CHALLENGE_B   = [0xF5, 0x69, 0x5A, 0x48]  # same as SECURITY_KEY, not a coincidence probably
-SECURITY_KEY2 = [0xB6, 0xE0, 0xC2, 0xEC]  # constant across runs
+SECURITY_KEY  = key_0x17[2:]              # [0xF5, 0x69, 0x5A, 0x48] — derived from CAN controller
+SECURITY_KEY2 = [0xB6, 0xE0, 0xC2, 0xEC] # constant across runs
 
 
 def wait_for_stream(terminator: list[int], timeout: float = 5.0) -> bool:
