@@ -91,7 +91,7 @@ def bootload(bus: can.Bus) -> dict:
     for i in range(650):
         send_can(canid=0x001, data=[0x01, 0xFF], delay=6)
 
-    time.sleep(0.0042)
+    time.sleep(0.042)
 
     # Server ack thing idek im just tryna copy the trc
     server_ack = False
@@ -99,7 +99,7 @@ def bootload(bus: can.Bus) -> dict:
 
     for i in range(0x00, 0x100):
         send_can(canid=0x001, data=[0x14, i], delay=0.0)
-        if VCU_response(canid=0x002, data=[0x14, 0x01] + session_token, timeout=0.035):  # ~35ms
+        if VCU_response(canid=0x002, data=[0x14, 0x01] + session_token, timeout=35):  # ~35ms
             break
 
     heartbeat()

@@ -1,11 +1,11 @@
 import can
 import time
 from typing import Optional
-from NotTested.CAN_controller import VCU_response, send_can, heartbeat, SESSION_TOKEN as session_token
+from CAN_controller import VCU_response, send_can, heartbeat
 
 
 def bootload(bus: can.Bus) -> dict:
-
+    session_token = [0x81, 0x16, 0x92, 0xAE]  # dont change.
     send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x01], delay=0.5)
     send_can(canid=0x001, data=[0x03, 0xFF], delay=0.7)
     send_can(canid=0x001, data=[0x01, 0xFF], delay=0.9)
@@ -20,7 +20,6 @@ def bootload(bus: can.Bus) -> dict:
     for i in range(650):
         send_can(canid=0x001, data=[0x01, 0xFF], delay=6)
 
-    time.sleep(0.0042)
 
     send_can(canid=0x001, data=[0x14, 0x01], delay=4)
 

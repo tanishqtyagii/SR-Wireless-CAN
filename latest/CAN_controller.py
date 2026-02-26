@@ -4,78 +4,154 @@ import sys
 import types
 from intelhex import IntelHex
 from typing import Iterable, List, Tuple, Optional
+from dataclasses import dataclass
+
 global VCU_state
 
-bus = can.Bus(interface='socketcan', channel='can0')
+# Exceptions
+class VCUTimeoutError(TimeoutError):
+    canid: int
+    timeout: float
+    expected_data: Optional[bytes] = None
+    expected_prefix: Optional[bytes] = None
 
-session_token = [0x81, 0x16, 0x92, 0xAE] # dont change.
+    def __post_init__(self) -> None:
+        if self.expected_data is not None and self.expected_prefix is not None:
+            raise ValueError("Provide only one of expected_data or expected_prefix")
 
-key_0x17 = [0x17, 0x01, 0xF5, 0x69, 0x5A, 0x48]
-key_0x17_2 = [0x17, 0x01, 0x78, 0x52, 0x25, 0x6C]
+    @staticmethod
+    def _fmt_can_line(canid: int, data: bytes) -> str:
+        # "0001  05 01 40 00 AD 22 43 8E "
+        return f"{canid:04X}  " + " ".join(f"{b:02X}" for b in data) + " "
 
-key_0x19_1 = [0x19, 0x01, 0xF5, 0x69, 0x5A, 0x48]
-key_0x19_2 = [0x19, 0x01, 0xC9, 0x1E, 0x2E, 0xCE]
+    def __str__(self) -> str:
+        if self.expected_data is not None:
+            expected_line = self._fmt_can_line(self.canid, self.expected_data)
+            expected_kind = "exact"
+        elif self.expected_prefix is not None:
+            expected_line = self._fmt_can_line(self.canid, self.expected_prefix)
+            expected_kind = "prefix"
+        else:
+            expected_line = f"{self.canid:04X}  <any> "
+            expected_kind = "any"
 
-def VCU_response(canid: int, data: Optional[list[int]] = None, prefix: Optional[list[int]] = None, timeout: float = 0.5) -> bool:
-    if not hasattr(VCU_response, "seen"):
-        VCU_response.seen = []  # list of (arbitration_id, data_bytes)
+        return (
+            f"VCU response timeout after {self.timeout:.3f}s\n"
+            f"Expected ({expected_kind}): {expected_line}"
+        )
 
-    target = None if data is None else bytes(data)
-    target_prefix = None if prefix is None else bytes(prefix)
-    end = time.monotonic() + timeout
 
-    while True:
-        remaining = end - time.monotonic()
-        if remaining <= 0:
+
+class CANController:
+    # ideally these never change, but ya never know
+    def __init__(self, interface: str="socketcan", channel: str="can0"):
+        # should ideally never change
+        self.interface = interface
+        self.channel = channel
+
+        # Create the bus & Buffered Reader
+        self.bus = can.Bus(interface=interface, channel=channel)
+        self.reader = can.BufferedReader()
+        self.notifier = can.Notifier(self.bus, [self.reader])
+
+        # Variables that are needed across
+        self.session_token = [0x81, 0x16, 0x92, 0xAE]  # from 0x14 01 response; Constant
+        # Derived from uj6; Since we're making uj6 constant, these all stay the same!!
+        self.key_0x17_1 = [0x17, 0x01, 0xF5, 0x69, 0x5A, 0x48]
+        self.key_0x17_2 = [0x17, 0x01, 0x78, 0x52, 0x25, 0x6C]
+        self.key_0x19_1 = [0x19, 0x01, 0xF5, 0x69, 0x5A, 0x48]
+        self.key_0x19_2 = [0x19, 0x01, 0xC9, 0x1E, 0x2E, 0xCE]
+
+    # Sending messages via can
+    def send_can(self, canid: int, data: list[int], delay: Optional[float] = 2):
+        """
+        Sends data (list) via canid (int), optional delay between messages (default 2ms)
+        :param canid:
+        :param data:
+        :param delay:
+        :return:
+        """
+        # id = can_id[canid] # ex. 0x001
+
+        msg = can.Message(
+            arbitration_id=canid,
+            data=data,
+            is_extended_id=False
+            # DLC handled internally
+        )
+        self.bus.send(msg)
+        time.sleep(delay / 1000)  # ms -> s (not a problem now since receivers on a diff thread)
+
+    # Awaits response from VCU from specified ID, optional exact data
+    def VCU_response(
+            self,
+            canid: int,
+            data: Optional[list[int]] = None,
+            prefix: Optional[list[int]] = None,
+            timeout: float = 100,
+    ) -> bool:
+        timeout = timeout / 1000
+
+        if data is not None and prefix is not None:
+            raise ValueError("only use data OR prefix, not both")
+
+        target = None if data is None else bytes(data)
+        target_prefix = None if prefix is None else bytes(prefix)
+
+        end = time.monotonic() + timeout
+
+        while True:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                raise VCUTimeoutError(
+                    canid=canid,
+                    timeout=timeout/1000,
+                    expected_data=target,
+                    expected_prefix=target_prefix,
+                )
+
+            msg = self.reader.get_message(timeout=remaining)
+            if msg is None:
+                continue
+
+            if msg.arbitration_id != canid:
+                continue
+
+            payload = bytes(msg.data)
+
+            if target is not None:
+                if payload == target:
+                    return True
+                continue
+
+            if target_prefix is not None:
+                if payload.startswith(target_prefix):
+                    return True
+                continue
+
+            return True
+
+    # Used throughout to see if VCU is alive
+    def heartbeat(self):
+        # Heartbeat check (ex: HEY IM STILL HERE)
+        self.send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
+        self.send_can(canid=0x001, data=[0x11, 0x01] + self.session_token + [0x01])
+
+        # Since we now have VCUTimeoutError
+        try:
+            self.VCU_response(0x002, data=[0x11, 0x01] + self.session_token, timeout=0.5)
+            print("VCU is still alive")
+            return True
+        except VCUTimeoutError:
+            print("its dead")
             return False
 
-        msg = bus.recv(timeout=remaining)
-        if msg is None:
-            continue
-
-        VCU_response.seen.append((msg.arbitration_id, bytes(msg.data)))
-
-        if msg.arbitration_id != canid:
-            continue
-
-        if target is not None and bytes(msg.data) == target:
-            return True
-        if target_prefix is not None and bytes(msg.data).startswith(target_prefix):
-            return True
-        if target is None and target_prefix is None:
-            return True
-
-
-def send_can(canid: int, data: list[int], delay: Optional[float] = 2):
-    """
-    Sends data (list) via canid (int), optional delay between messages (default 2ms)
-    :param canid:
-    :param data:
-    :param delay:
-    :return:
-    """
-    # id = can_id[canid] # ex. 0x001
-
-    msg = can.Message(
-        arbitration_id=canid,
-        data=data,
-        is_extended_id=False
-        # DLC handled internally yurrr
-    )
-    bus.send(msg)
-    time.sleep(delay / 1000)  # ms -> s
-
-
-def heartbeat():
-    # Heartbeat check (ex: HEY IM STILL HERE)
-    send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
-    send_can(canid=0x001, data=[0x11] + session_token + [0x01])
-
-    if VCU_response(canid=0x002, data=[0x11, 0x01] + session_token):
-        print("VCU is still alive")
-    else:
-        print("its dead")
-
+    # To close the bus and reader thread
+    def close(self) -> None:
+        try:
+            self.notifier.stop()
+        finally:
+            self.bus.shutdown()
 
 def hex_clear_span(hex_path: str, erase_block: int = 0x10000) -> tuple[int, int]:
     """
@@ -129,6 +205,9 @@ def flash_kernel() -> dict:
     """Replay of the kernel-flash trace (CAN IDs 0x001 send, 0x002 expect)."""
     # NOTE: send_can(canid=0x001, data=[...]) must transmit that 8-byte CAN frame.
     #       VCU_response(canid=0x002, data=[...], timeout=...) must block until that frame is observed, returning True/False.
+
+    send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xE0, 0x00, 0x00])
+    VCU_response(canid=0x002, data=[0x0D, 0x01])
 
     # 851) 29602.6  ID=0x001 DLC=8
     send_can(canid=0x001, data=[0x05, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00])
@@ -7837,16 +7916,3 @@ def flash_kernel() -> dict:
     print("flashing kernel success")
     return {"status": "SUCCESS"}
 
-
-if __name__ == "__main__":
-    from NotTested.bootloader2 import bootload
-    from NotTested.hex_transfer import flash_hex
-    from NotTested.finalization import finalize
-
-    bootload(bus=bus)
-    print("Moving on to flashing!")
-    time.sleep(1)
-    flash_hex(bus=bus, hex_path="231_80kw.hex")
-    finalize()
-    print("IT WORKEDDDDD :(")
-    bus.shutdown()
