@@ -1,44 +1,41 @@
 import time
-from NotTested.CAN_controller import send_can, VCU_response, heartbeat, bus, key_0x17
-
-SECURITY_KEY  = key_0x17[2:]              # [0xF5, 0x69, 0x5A, 0x48] — derived from CAN controller
-SECURITY_KEY2 = [0xB6, 0xE0, 0xC2, 0xEC] # constant across runs
+from CAN_controller import CANController
 
 
-def wait_for_stream(terminator: list[int], timeout: float = 5.0) -> bool:
-    # eat all 04 packets until we get the terminator frame
-    end = time.monotonic() + timeout
-    term = bytes(terminator)
-    while True:
-        remaining = end - time.monotonic()
-        if remaining <= 0:
-            return False
-        msg = bus.recv(timeout=remaining)
-        if msg is None:
-            continue
-        if msg.arbitration_id == 0x002 and bytes(msg.data) == term:
-            return True
+def finalize(ctrl: CANController) -> dict:
+    send_can = ctrl.send_can
+    VCU_response = ctrl.VCU_response
+    heartbeat = ctrl.heartbeat
 
+    security_key  = ctrl.key_0x17_1[2:]         # [0xF5, 0x69, 0x5A, 0x48] — derived from CAN controller
+    security_key2 = [0xB6, 0xE0, 0xC2, 0xEC]    # constant across runs
 
-def security_handshake(key=None):
-    k = key if key is not None else SECURITY_KEY
-    send_can(canid=0x001, data=[0x18, 0x01] + k)
-    if not VCU_response(canid=0x002, data=[0x18, 0x01]):
-        raise Exception("security handshake failed")
+    def wait_for_stream(terminator: list[int], timeout: float = 5.0) -> bool:
+        # eat all 04 packets until we get the terminator frame
+        end = time.monotonic() + timeout
+        term = bytes(terminator)
+        while True:
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                return False
+            msg = ctrl.bus.recv(timeout=remaining)
+            if msg is None:
+                continue
+            if msg.arbitration_id == 0x002 and bytes(msg.data) == term:
+                return True
 
-
-
-def finalize():
+    def security_handshake(key=None):
+        k = key if key is not None else security_key
+        send_can(canid=0x001, data=[0x18, 0x01] + k)
+        VCU_response(canid=0x002, data=[0x18, 0x01])
 
     security_handshake()
 
     send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xC1, 0x00, 0x80])
-    if not VCU_response(canid=0x002, data=[0x0D, 0x01]):
-        raise Exception("0D failed")
+    VCU_response(canid=0x002, data=[0x0D, 0x01])
 
     send_can(canid=0x001, data=[0x10, 0x01, 0x00, 0x01, 0xDE, 0x00])
-    if not VCU_response(canid=0x002, prefix=[0x10, 0x01], timeout=1.0):  # doesn't matter what it is, just needs to be 10
-        raise Exception("10 memory pointer failed")
+    VCU_response(canid=0x002, prefix=[0x10, 0x01], timeout=1.0)  # doesn't matter what it is, just needs to be 10
 
     # 04 stream 1
     send_can(canid=0x001, data=[0x04, 0x01, 0x00, 0xC0, 0x7F, 0x00, 0x80])
@@ -50,35 +47,30 @@ def finalize():
     if not wait_for_stream(terminator=[0x04, 0x01, 0x74, 0x80]):
         raise Exception("04 stream 2 failed")
 
-    security_handshake(key=SECURITY_KEY2)  # 18 B6 E0 C2 EC - constant variant
+    security_handshake(key=security_key2)  # 18 B6 E0 C2 EC - constant variant
 
     send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xC1, 0x00, 0x00])
-    if not VCU_response(canid=0x002, data=[0x0D, 0x01]):
-        raise Exception("0D second op failed")
+    VCU_response(canid=0x002, data=[0x0D, 0x01])
 
     send_can(canid=0x001, data=[0x10, 0x01, 0x00, 0x00, 0x00, 0x7C])
-    if not VCU_response(canid=0x002, data=[0x10, 0x01, 0x80, 0x74, 0xC7, 0x83]):
-        raise Exception("10 second op failed")
+    VCU_response(canid=0x002, data=[0x10, 0x01, 0x80, 0x74, 0xC7, 0x83])
 
     security_handshake()
 
     send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xC1, 0x00, 0x80])
-    if not VCU_response(canid=0x002, data=[0x0D, 0x01]):
-        raise Exception("0D failed")
+    VCU_response(canid=0x002, data=[0x0D, 0x01])
 
     send_can(canid=0x001, data=[0x10, 0x01, 0x00, 0x01, 0xDE, 0x00])
-    if not VCU_response(canid=0x002, prefix=[0x10, 0x01], timeout=1.0):  # doesn't matter what it is, just needs to be 10
-        raise Exception("10 memory pointer failed")
+    VCU_response(canid=0x002, prefix=[0x10, 0x01], timeout=1.0)  # doesn't matter what it is, just needs to be 10
 
     # 04 stream 3
     send_can(canid=0x001, data=[0x04, 0x01, 0x00, 0xC0, 0x7F, 0x80, 0x80])
     if not wait_for_stream(terminator=[0x04, 0x01, 0x00, 0x00]):
         raise Exception("04 stream 3 failed")
 
-
     # HEARTBEAT LOOP
     # each full cycle = pair 1 + pair 2 + security + 0D + 10
-    for i in range(3):
+    for _ in range(3):
 
         # -- heartbeat pair 1 --
         heartbeat()
@@ -90,9 +82,11 @@ def finalize():
         security_handshake()
 
         send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xC1, 0x00, 0x80])
-        if not VCU_response(canid=0x002, data=[0x0D, 0x01]):
-            raise Exception("0D in heartbeat loop failed")
+        VCU_response(canid=0x002, data=[0x0D, 0x01])
 
         send_can(canid=0x001, data=[0x10, 0x01, 0x00, 0x01, 0xDE, 0x00])
-        if not VCU_response(canid=0x002, prefix=[0x10, 0x01], timeout=1.0):  # doesn't matter what it is, just needs to be 10
-            raise Exception("10 in heartbeat loop failed")
+        VCU_response(canid=0x002, prefix=[0x10, 0x01], timeout=1.0)  # doesn't matter what it is, just needs to be 10
+
+    print("Finalization successful")
+
+    return {"status": "success"}
