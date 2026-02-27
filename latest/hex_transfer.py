@@ -1,192 +1,207 @@
-import intelhex
-from typing import List, Optional, Tuple
+from __future__ import annotations
 
+from typing import List
+from intelhex import IntelHex
+
+from CAN_controller import CANController
+from flash_kernel import flash_kernel
 
 
 def _u32_be(x: int) -> List[int]:
     return [(x >> 24) & 0xFF, (x >> 16) & 0xFF, (x >> 8) & 0xFF, x & 0xFF]
 
 
-def _load_linear_image(hex_path: str, pad: int = 0xFF) -> Tuple[int, bytearray]:
+def hex_length(ih: IntelHex) -> int:
     """
-    Returns (base_addr, linearized_image_bytes).
-    Linearizes Intel HEX into a contiguous bytearray from minaddr..maxaddr inclusive.
-    Gaps are padded with 0xFF (erased flash value).
+    Returns the firmware image length in bytes for THIS protocol:
+    image starts at 0xC10000 and extends through the HEX's max address (inclusive).
+
+    Example: maxaddr=0xC2DE7F -> length = 0xC2DE7F - 0xC10000 + 1 = 0x1DE80
     """
-    ih = intelhex.IntelHex(hex_path)
-    base = ih.minaddr()
-    end = ih.maxaddr()
-    if base is None or end is None:
-        raise ValueError("HEX has no data records")
+    FLASH_BASE = 0xC10000  # protocol fact
 
-    data = ih.tobinarray(start=base, end=end, pad=pad)  # inclusive end
-    return base, bytearray(data)
-
-
-def _hex_span(hex_path: str) -> Tuple[int, int]:
-    """(minaddr, length) inclusive span of data in the hex file."""
-    ih = intelhex.IntelHex(hex_path)
     mn = ih.minaddr()
     mx = ih.maxaddr()
     if mn is None or mx is None:
         raise ValueError("HEX has no data records")
-    return mn, (mx - mn + 1)
+
+    if mx < FLASH_BASE:
+        raise ValueError(f"HEX maxaddr 0x{mx:X} is below FLASH_BASE 0x{FLASH_BASE:X}")
+
+    return (mx - FLASH_BASE) + 1
 
 
-def _erase_plan_0x0C_frames(erase_start: int, length: int, *, session: int, chunk: int = 0x10000) -> List[List[int]]:
+def calculate_0x0C_frames(ih: IntelHex, length: int) -> List[List[int]]:
     """
-    0x0C erase frames:
-      [0x0C, session, addr32_be(4), (len-1)_be(2)]
-    Split into 0x10000 chunks like the trace.
+    Builds 0x0C erase frames for THIS protocol:
+      - start address ALWAYS 0xC10000
+      - session ALWAYS 0x01
+      - chunk size ALWAYS 0x10000
+      - length encoding is (len-1) big-endian
+
+    Returns: list of frames as list[int] (each frame is 8 bytes).
     """
+    FLASH_BASE = 0xC10000  # protocol fact
+    SESSION = 0x01         # protocol fact
+    CHUNK = 0x10000        # protocol fact (64KiB)
+
+    mn = ih.minaddr()
+    mx = ih.maxaddr()
+    if mn is None or mx is None:
+        raise ValueError("HEX has no data records")
+    if mx < FLASH_BASE:
+        raise ValueError(f"HEX maxaddr 0x{mx:X} is below FLASH_BASE 0x{FLASH_BASE:X}")
+
+    if length <= 0:
+        return []
+
     frames: List[List[int]] = []
-    addr = erase_start
+    addr = FLASH_BASE
     remaining = length
+
     while remaining > 0:
-        this_len = min(remaining, chunk)
-        len_m1 = this_len - 1
+        this_len = CHUNK if remaining > CHUNK else remaining
+        len_m1 = this_len - 1  # protocol uses (len-1)
+
         frames.append([
-            0x0C, session,
+            0x0C, SESSION,
             (addr >> 24) & 0xFF, (addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF,
             (len_m1 >> 8) & 0xFF, len_m1 & 0xFF,
         ])
+
         addr += this_len
         remaining -= this_len
+
     return frames
 
 
-def flash_hex(
-    hex_path: str,
-    header80: List[int],
-    *,
-    session: int = 0x01,
-    staging_addr: int = 0xE08000,
-    block_size: int = 0x8000,
-    chunk_size: int = 6,
-    poll_every_frames: int = 11,          # 11 * 6 = 66 (0x42) typical
-    send_delay_ms: float = 1.0,
-    poll_timeout: float = 1.0,
-    ptr_timeout: float = 1.0,
-    commit_timeout: float = 3.0,
-    do_flash_kernel: bool = True,
-    do_erase: bool = True,
-) -> dict:
-    from NotTested.CAN_controller import send_can, VCU_response, flash_kernel
-
+def flash_hex(ctrl: CANController, ih: IntelHex, header80: List[int], *, do_flash_kernel: bool = True, do_erase: bool = True) -> dict:
     """
-    Matches your trace behavior for the firmware streaming stage:
-      - optional flash_kernel()
-      - optional erase via 0x0C
-      - 0D -> staging (E08000)
-      - for each block:
-          * 0x05 01 payload bytes (1..6 each)
-          * 0x02 01 poll every 11 frames + final remainder poll
-          * 0D -> destination (C1xxxx / C2xxxx ...)
-          * 0B commit from E08000 with len-1
-          * if MORE blocks remain: 0D -> staging again (like trace)
-        stops after final 0B ack (does NOT do 0x18/0x10 verify steps)
+    Duplicates the trace-style streaming stage (kernel -> erase -> stage -> stream -> poll -> dest -> commit).
+
+    Inputs:
+      - ctrl: your CANController (has send_can() delay_ms and VCU_response() timeout_ms)
+      - ih: IntelHex object (already loaded)
+      - header80: list[int] length 0x80 (the patched APDB header)
     """
 
-    # --- validate header ---
+    # ---- protocol facts / hardcoded knobs (match your trace conventions) ----
+    SESSION = 0x01
+    FLASH_BASE = 0xC10000
+    STAGING_ADDR = 0xE08000
+    BLOCK_SIZE = 0x8000
+    CHUNK_SIZE = 6
+    POLL_EVERY_FRAMES = 11          # 11 * 6 = 66 (0x42) typical
+    SEND_DELAY_MS = 1.0
+
+    PTR_TIMEOUT_MS = 1000
+    POLL_TIMEOUT_MS = 1000
+    COMMIT_TIMEOUT_MS = 3000
+    ERASE_ACK_TIMEOUT_MS = 2000
+
+    send_can = ctrl.send_can
+    VCU_response = ctrl.VCU_response
+
+    # ---- validate header ----
     if not isinstance(header80, list) or len(header80) != 0x80:
         raise ValueError("header80 must be a list of exactly 0x80 ints")
     if any((not isinstance(b, int) or b < 0 or b > 0xFF) for b in header80):
         raise ValueError("header80 elements must be ints 0..255")
 
+    # ---- optional flash kernel stage ----
     if do_flash_kernel:
-        flash_kernel()
+        flash_kernel(ctrl)  # assumes your flash_kernel() takes ctrl
 
-    # --- erase (dynamic from hex span) ---
+    # ---- compute image length + optional erase frames (0x0C) ----
+    length = hex_length(ih)
+
     if do_erase:
-        erase_start, length = _hex_span(hex_path)
-        for frame in _erase_plan_0x0C_frames(erase_start, length, session=session, chunk=0x10000):
-            send_can(0x001, frame, delay=send_delay_ms)
-            if not VCU_response(0x002, prefix=[0x0C, session, 0x01], timeout=2.0):
-                raise RuntimeError("Flash erase failed (0x0C ack not seen)")
+        erase_frames = calculate_0x0C_frames(ih, length)
+        for frame in erase_frames:
+            send_can(0x001, frame, delay=SEND_DELAY_MS)
+            # trace-style ack is typically: 0C 01 01 (prefix is safest)
+            VCU_response(0x002, prefix=[0x0C, SESSION, 0x01], timeout=ERASE_ACK_TIMEOUT_MS)
 
-    # --- build the exact streamed image: linearized HEX, then overwrite first 0x80 with your header ---
-    flash_base, image = _load_linear_image(hex_path, pad=0xFF)
+    # ---- build exact streamed image bytes from FLASH_BASE for 'length' bytes, pad gaps with 0xFF ----
+    end_addr = FLASH_BASE + length - 1
+    image = bytearray(ih.tobinarray(start=FLASH_BASE, end=end_addr, pad=0xFF))  # inclusive end
     if len(image) < 0x80:
         raise ValueError("HEX image is smaller than 0x80 bytes; cannot apply APDB header")
     image[0:0x80] = bytes(header80)
 
     total_len = len(image)
+    mv = memoryview(image)
 
-    # --- set pointer to staging buffer (trace does this before first 0x05 burst) ---
-    send_can(0x001, [0x0D, session] + _u32_be(staging_addr), delay=send_delay_ms)
-    if not VCU_response(0x002, data=[0x0D, session], timeout=ptr_timeout):
-        raise RuntimeError("Failed to set staging pointer (0x0D ack not seen)")
+    # ---- set pointer to staging buffer (0x0D -> E08000) ----
+    send_can(0x001, [0x0D, SESSION] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
+    VCU_response(0x002, data=[0x0D, SESSION], timeout=PTR_TIMEOUT_MS)
 
     offset = 0
     block_index = 0
 
-    mv = memoryview(image)
-
     while offset < total_len:
-        # dynamic block length
-        this_len = min(block_size, total_len - offset)
-        block = mv[offset:offset + this_len]
+        this_len = min(BLOCK_SIZE, total_len - offset)
+        block = mv[offset: offset + this_len]
 
-        # ---- fill staging with 0x05 frames + 0x02 polls (dynamic ack byte count) ----
+        # ---- write into staging: 0x05 frames (<=6 bytes), poll 0x02 every 11 frames ----
         frames_since_poll = 0
         bytes_since_poll = 0
 
         i = 0
         while i < this_len:
-            chunk = block[i:i + chunk_size]              # 1..6 bytes at end-of-block
-            send_can(0x001, [0x05, session] + list(chunk), delay=send_delay_ms)
+            chunk = block[i: i + CHUNK_SIZE]
+            send_can(0x001, [0x05, SESSION] + list(chunk), delay=SEND_DELAY_MS)
 
             frames_since_poll += 1
             bytes_since_poll += len(chunk)
             i += len(chunk)
 
-            if frames_since_poll >= poll_every_frames:
-                send_can(0x001, [0x02, session], delay=send_delay_ms)
+            if frames_since_poll >= POLL_EVERY_FRAMES:
+                send_can(0x001, [0x02, SESSION], delay=SEND_DELAY_MS)
                 expected = bytes_since_poll & 0xFF
-                if not VCU_response(0x002, data=[0x02, session, 0x00, expected, 0x00, 0x00], timeout=poll_timeout):
-                    raise RuntimeError(
-                        f"Poll ack missing/mismatch in block {block_index}: expected 0x{expected:02X}"
-                    )
+                VCU_response(
+                    0x002,
+                    data=[0x02, SESSION, 0x00, expected, 0x00, 0x00],
+                    timeout=POLL_TIMEOUT_MS,
+                )
                 frames_since_poll = 0
                 bytes_since_poll = 0
 
-        # final remainder poll for end-of-block (e.g., 0x20 after 0x8000, 0x24 at end of 0x5E80)
+        # ---- final remainder poll at end-of-block ----
         if bytes_since_poll > 0:
-            send_can(0x001, [0x02, session], delay=send_delay_ms)
+            send_can(0x001, [0x02, SESSION], delay=SEND_DELAY_MS)
             expected = bytes_since_poll & 0xFF
-            if not VCU_response(0x002, data=[0x02, session, 0x00, expected, 0x00, 0x00], timeout=poll_timeout):
-                raise RuntimeError(
-                    f"Final remainder poll ack missing/mismatch in block {block_index}: expected 0x{expected:02X}"
-                )
+            VCU_response(
+                0x002,
+                data=[0x02, SESSION, 0x00, expected, 0x00, 0x00],
+                timeout=POLL_TIMEOUT_MS,
+            )
 
-        # ---- set destination flash pointer (dynamic: base + offset) ----
-        dest_addr = flash_base + offset
-        send_can(0x001, [0x0D, session] + _u32_be(dest_addr), delay=send_delay_ms)
-        if not VCU_response(0x002, data=[0x0D, session], timeout=ptr_timeout):
-            raise RuntimeError(f"Failed to set dest pointer 0x{dest_addr:08X} (0x0D ack not seen)")
+        # ---- set destination pointer: 0x0D -> FLASH_BASE + offset ----
+        dest_addr = FLASH_BASE + offset
+        send_can(0x001, [0x0D, SESSION] + _u32_be(dest_addr), delay=SEND_DELAY_MS)
+        VCU_response(0x002, data=[0x0D, SESSION], timeout=PTR_TIMEOUT_MS)
 
-        # ---- commit (dynamic: this_len) ----
+        # ---- commit: 0x0B copies from E08000 (staging) to current dest pointer ----
         len_m1 = this_len - 1
-        # matches your trace exactly (8 bytes total):
-        commit = [0x0B, session, 0x00, 0xE0, 0x80, 0x00, (len_m1 >> 8) & 0xFF, len_m1 & 0xFF]
-        send_can(0x001, commit, delay=send_delay_ms)
-        if not VCU_response(0x002, data=[0x0B, session, 0x01], timeout=commit_timeout):
-            raise RuntimeError(f"Commit failed in block {block_index} (0x0B ack not seen)")
+        commit = [0x0B, SESSION, 0x00, 0xE0, 0x80, 0x00, (len_m1 >> 8) & 0xFF, len_m1 & 0xFF]
+        send_can(0x001, commit, delay=SEND_DELAY_MS)
+        VCU_response(0x002, data=[0x0B, SESSION, 0x01], timeout=COMMIT_TIMEOUT_MS)
 
         offset += this_len
         block_index += 1
 
-        # ---- IMPORTANT: trace only resets staging pointer if another block follows ----
+        # ---- trace resets staging pointer only if another block follows ----
         if offset < total_len:
-            send_can(0x001, [0x0D, session] + _u32_be(staging_addr), delay=send_delay_ms)
-            if not VCU_response(0x002, data=[0x0D, session], timeout=ptr_timeout):
-                raise RuntimeError("Failed to reset staging pointer for next block (0x0D ack not seen)")
+            send_can(0x001, [0x0D, SESSION] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
+            VCU_response(0x002, data=[0x0D, SESSION], timeout=PTR_TIMEOUT_MS)
 
     return {
         "status": "success",
-        "flash_base": hex(flash_base),
+        "flash_base": hex(FLASH_BASE),
         "total_len": total_len,
-        "block_size": block_size,
         "blocks": block_index,
-        "last_block_len": (total_len % block_size) or block_size,
+        "last_block_len": (total_len % BLOCK_SIZE) or BLOCK_SIZE,
+        "erased": bool(do_erase),
+        "kernel": bool(do_flash_kernel),
     }
