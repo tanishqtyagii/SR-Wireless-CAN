@@ -29,7 +29,7 @@ from finalization import finalize
 HEADER80: list = [0x00] * 0x80  # TODO: supply real APDB header
 
 
-def main(hex_path: str, interface: str = "socketcan", channel: str = "can0"):
+def main(hex_path: str, interface: str = "pcan", channel: str = "PCAN_USBBUS1"):
     ctrl = CANController(interface=interface, channel=channel)
 
     try:
