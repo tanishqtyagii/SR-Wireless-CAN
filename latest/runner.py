@@ -2,7 +2,7 @@
 from CAN_controller import CANController
 from bootloader import bootload
 from hex_transfer import flash_hex
-from finalizer import finalize
+from finalization import finalize
 from intelhex import IntelHex
 
 header80 = [

@@ -107,6 +107,8 @@ def flash_hex(ctrl: CANController, ih: IntelHex, header80: List[int], *, do_flas
         raise ValueError("header80 must be a list of exactly 0x80 ints")
     if any((not isinstance(b, int) or b < 0 or b > 0xFF) for b in header80):
         raise ValueError("header80 elements must be ints 0..255")
+    send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xE0, 0x00, 0x00])
+    VCU_response(0x002, data=[0x0D, 0x01])
 
     # ---- optional flash kernel stage ----
     if do_flash_kernel:
@@ -120,7 +122,7 @@ def flash_hex(ctrl: CANController, ih: IntelHex, header80: List[int], *, do_flas
         for frame in erase_frames:
             send_can(0x001, frame, delay=SEND_DELAY_MS)
             # trace-style ack is typically: 0C 01 01 (prefix is safest)
-            VCU_response(0x002, prefix=[0x0C, SESSION, 0x01], timeout=ERASE_ACK_TIMEOUT_MS)
+            VCU_response(0x002, prefix=[0x0C, 0x01, 0x01], timeout=ERASE_ACK_TIMEOUT_MS)
 
     # ---- build exact streamed image bytes from FLASH_BASE for 'length' bytes, pad gaps with 0xFF ----
     end_addr = FLASH_BASE + length - 1
@@ -133,8 +135,8 @@ def flash_hex(ctrl: CANController, ih: IntelHex, header80: List[int], *, do_flas
     mv = memoryview(image)
 
     # ---- set pointer to staging buffer (0x0D -> E08000) ----
-    send_can(0x001, [0x0D, SESSION] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
-    VCU_response(0x002, data=[0x0D, SESSION], timeout=PTR_TIMEOUT_MS)
+    send_can(0x001, [0x0D, 0x01] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
+    VCU_response(0x002, data=[0x0D, 0x01], timeout=PTR_TIMEOUT_MS)
 
     offset = 0
     block_index = 0
