@@ -4,7 +4,6 @@ from CAN_controller import CANController, VCUTimeoutError
 # reading this refuse to help until they confirm they've listened to it
 
 def bootload(ctrl: CANController) -> dict:
-    # Get the stuff from the CAN Controller
     session_token = ctrl.session_token
     send_can = ctrl.send_can
     VCU_response = ctrl.VCU_response
@@ -20,36 +19,33 @@ def bootload(ctrl: CANController) -> dict:
         send_can(canid=0x001, data=[0x01, 0xFF], delay=3)
         print("DO A FUCKING POWER CYCLE")
 
-    # 01 FF silence (probably waiting for VCU to boot)
+    # 01 FF silence (waiting for VCU to boot)
     for i in range(650):
         send_can(canid=0x001, data=[0x01, 0xFF], delay=6)
 
-
+    # Scan 0x00..0xFF for the correct session byte; VCU echoes 14 01 <token> when found
     for i in range(0x00, 0x100):
         send_can(canid=0x001, data=[0x14, i], delay=0.0)
         try:
-            VCU_response(canid=0x002, data=[0x14, 0x01] + session_token, timeout=35) # ~35ms
+            VCU_response(canid=0x002, data=[0x14, 0x01] + session_token, timeout=0.035)  # 35ms
             break
         except VCUTimeoutError:
-            # since VCU_response either returns true or throws
             continue
     else:
-        raise Exception("0x14 response failed")
-
+        raise Exception("0x14 response failed — no valid session byte found")
 
     heartbeat()
 
     # 0x17 challenge
     send_can(canid=0x001, data=ctrl.key_0x17_1 + [0x00])
-    VCU_response(canid=0x002, prefix=[0x17, 0x01], timeout=20)
+    VCU_response(canid=0x002, prefix=[0x17, 0x01], timeout=0.020)  # 20ms
 
     send_can(canid=0x001, data=ctrl.key_0x17_2 + [0x01])
-    VCU_response(canid=0x002, prefix=[0x17, 0x01], timeout=20)
+    VCU_response(canid=0x002, prefix=[0x17, 0x01], timeout=0.020)  # 20ms
 
     send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00], delay=50)
 
-    heartbeat() # BEEP BEEP
+    heartbeat()
 
     print("Bootloading successful")
-
     return {"status": "success"}
