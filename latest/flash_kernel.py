@@ -3567,7 +3567,7 @@ def flash_kernel(ctrl: CANController) -> None:
     VCU_response(canid=0x002, prefix=[0x02, 0x01], timeout=2000)
     send_can(canid=0x001, data=[0x0E, 0x01, 0x00, 0xE0, 0x16, 0x3A], delay=d)
     VCU_response(canid=0x002, data=[0x0E, 0x01], timeout=2000)
-    send_can(canid=0x001, data=[0x14, 0x01], delay=d)
+    send_can(canid=0x001, data=[0x14, 0x01], delay=300)
     VCU_response(canid=0x002, prefix=[0x14, 0x01], timeout=2000)
 
     send_can(canid=0x001, data=key_0x17_1 + [0x00])

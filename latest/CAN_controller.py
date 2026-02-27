@@ -106,7 +106,7 @@ class CANController:
             if remaining <= 0:
                 raise VCUTimeoutError(
                     canid=canid,
-                    timeout=timeout/1000,
+                    timeout=timeout,
                     expected_data=target,
                     expected_prefix=target_prefix,
                 )
