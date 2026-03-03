@@ -3730,10 +3730,10 @@ def flash_kernel(ctrl: CANController) -> None:
     VCU_response(0x002, data=[0x11, 0x01] + session_token)
 
     # 4530) 46084.3  Rx  0001  6  18 01 F5 69 5A 48
-    # SKIP 0x18: would have been send_can(0x001, [0x18, 0x01, 0xF5, 0x69, 0x5A, 0x48], delay=0.7)
+    send_can(canid=0x001, data=[0x18, 0x01, 0xF5, 0x69, 0x5A, 0x48], delay=0.7)
 
     # 4531) 46085.0  Rx  0002  2  18 01
-    # SKIP 0x18 response: would have been VCU_response(0x002, data=[0x18, 0x01])
+    VCU_response(canid=0x002, data=[0x18, 0x01], timeout=1000)
 
     # 4532) 46086.1  Rx  0001  6  0D 01 00 C1 00 80
     send_can(0x001, [0x0D, 0x01, 0x00, 0xC1, 0x00, 0x80], delay=0.7)
@@ -3742,10 +3742,10 @@ def flash_kernel(ctrl: CANController) -> None:
     VCU_response(0x002, data=[0x0D, 0x01])
 
     # 4534) 46087.9  Rx  0001  6  10 01 00 01 DE 00
-    # SKIP 0x10: would have been send_can(0x001, [0x10, 0x01, 0x00, 0x01, 0xDE, 0x00], delay=44.1)
+    send_can(canid=0x001, data=[0x10, 0x01, 0x00, 0x01, 0xDE, 0x00], delay=44.1)
 
     # 4535) 46132.0  Rx  0002  6  10 01 BE 55 B3 7D
-    # SKIP 0x10 response: would have been VCU_response(0x002, prefix=[0x10, 0x01])
+    VCU_response(canid=0x002, prefix=[0x10, 0x01], timeout=1000)
 
     # 4536) 46133.1  Rx  0001  7  11 FF 00 00 00 00 00
     send_can(0x001, [0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00], delay=0.0)
@@ -3787,4 +3787,5 @@ def flash_kernel(ctrl: CANController) -> None:
     send_can(0x001, [0x11, 0x01] + session_token + [0x01], delay=0.6)
 
     # 4549) 46936.5  Rx  0002  6  11 01 81 16 92 AE
+    VCU_response(0x002, data=[0x11, 0x01] + session_token)
     VCU_response(0x002, data=[0x11, 0x01] + session_token)

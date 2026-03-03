@@ -107,12 +107,14 @@ def flash_hex(ctrl: CANController, ih: IntelHex, header80: List[int], *, do_flas
         raise ValueError("header80 must be a list of exactly 0x80 ints")
     if any((not isinstance(b, int) or b < 0 or b > 0xFF) for b in header80):
         raise ValueError("header80 elements must be ints 0..255")
-    send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xE0, 0x00, 0x00])
-    VCU_response(0x002, data=[0x0D, 0x01])
 
     # ---- optional flash kernel stage ----
     if do_flash_kernel:
         flash_kernel(ctrl)  # assumes your flash_kernel() takes ctrl
+    else:
+        # If kernel isn't flashed, still set kernel load pointer (trace has this just once).
+        send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xE0, 0x00, 0x00])
+        VCU_response(0x002, data=[0x0D, 0x01])
 
     # ---- compute image length + optional erase frames (0x0C) ----
     length = hex_length(ih)
