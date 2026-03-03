@@ -12,19 +12,12 @@ def _u32_be(x: int) -> List[int]:
 
 
 def hex_length(ih: IntelHex) -> int:
-    """
-    Returns the firmware image length in bytes for THIS protocol:
-    image starts at 0xC10000 and extends through the HEX's max address (inclusive).
-
-    Example: maxaddr=0xC2DE7F -> length = 0xC2DE7F - 0xC10000 + 1 = 0x1DE80
-    """
     FLASH_BASE = 0xC10000  # protocol fact
 
     mn = ih.minaddr()
     mx = ih.maxaddr()
     if mn is None or mx is None:
         raise ValueError("HEX has no data records")
-
     if mx < FLASH_BASE:
         raise ValueError(f"HEX maxaddr 0x{mx:X} is below FLASH_BASE 0x{FLASH_BASE:X}")
 
@@ -32,15 +25,6 @@ def hex_length(ih: IntelHex) -> int:
 
 
 def calculate_0x0C_frames(ih: IntelHex, length: int) -> List[List[int]]:
-    """
-    Builds 0x0C erase frames for THIS protocol:
-      - start address ALWAYS 0xC10000
-      - session ALWAYS 0x01
-      - chunk size ALWAYS 0x10000
-      - length encoding is (len-1) big-endian
-
-    Returns: list of frames as list[int] (each frame is 8 bytes).
-    """
     FLASH_BASE = 0xC10000  # protocol fact
     SESSION = 0x01         # protocol fact
     CHUNK = 0x10000        # protocol fact (64KiB)
@@ -75,14 +59,19 @@ def calculate_0x0C_frames(ih: IntelHex, length: int) -> List[List[int]]:
     return frames
 
 
-def flash_hex(ctrl: CANController, ih: IntelHex, header80: List[int], *, do_flash_kernel: bool = True, do_erase: bool = True) -> dict:
+def hex_transfer(
+    ctrl: CANController,
+    ih: IntelHex,
+    header80: List[int],
+    *,
+    do_flash_kernel: bool = True,
+    do_erase: bool = True,
+) -> dict:
     """
-    Duplicates the trace-style streaming stage (kernel -> erase -> stage -> stream -> poll -> dest -> commit).
-
-    Inputs:
-      - ctrl: your CANController (has send_can() delay_ms and VCU_response() timeout_ms)
-      - ih: IntelHex object (already loaded)
-      - header80: list[int] length 0x80 (the patched APDB header)
+    Same logic as your flash_hex, but tightened timing:
+      - no per-frame sleep (SEND_DELAY_MS = 0)
+      - no 500ms staging-pointer sleep between blocks
+      - pacing remains via 0x02 poll/ack (trace-style)
     """
 
     # ---- protocol facts / hardcoded knobs (match your trace conventions) ----
@@ -92,8 +81,11 @@ def flash_hex(ctrl: CANController, ih: IntelHex, header80: List[int], *, do_flas
     BLOCK_SIZE = 0x8000
     CHUNK_SIZE = 6
     POLL_EVERY_FRAMES = 11          # 11 * 6 = 66 (0x42) typical
-    SEND_DELAY_MS = 10
 
+    # tightened: remove artificial sleeps
+    SEND_DELAY_MS = 0
+
+    # timeouts don't slow you down unless you miss an ack (so keep reasonable)
     PTR_TIMEOUT_MS = 1000
     POLL_TIMEOUT_MS = 1000
     COMMIT_TIMEOUT_MS = 3000
@@ -110,11 +102,11 @@ def flash_hex(ctrl: CANController, ih: IntelHex, header80: List[int], *, do_flas
 
     # ---- optional flash kernel stage ----
     if do_flash_kernel:
-        flash_kernel(ctrl)  # assumes your flash_kernel() takes ctrl
+        flash_kernel(ctrl)
     else:
         # If kernel isn't flashed, still set kernel load pointer (trace has this just once).
-        send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xE0, 0x00, 0x00])
-        VCU_response(0x002, data=[0x0D, 0x01])
+        send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xE0, 0x00, 0x00], delay=SEND_DELAY_MS)
+        VCU_response(0x002, data=[0x0D, 0x01], timeout=PTR_TIMEOUT_MS)
 
     # ---- compute image length + optional erase frames (0x0C) ----
     length = hex_length(ih)
@@ -123,7 +115,6 @@ def flash_hex(ctrl: CANController, ih: IntelHex, header80: List[int], *, do_flas
         erase_frames = calculate_0x0C_frames(ih, length)
         for frame in erase_frames:
             send_can(0x001, frame, delay=SEND_DELAY_MS)
-            # trace-style ack is typically: 0C 01 01 (prefix is safest)
             VCU_response(0x002, prefix=[0x0C, 0x01, 0x01], timeout=ERASE_ACK_TIMEOUT_MS)
 
     # ---- build exact streamed image bytes from FLASH_BASE for 'length' bytes, pad gaps with 0xFF ----
@@ -137,8 +128,8 @@ def flash_hex(ctrl: CANController, ih: IntelHex, header80: List[int], *, do_flas
     mv = memoryview(image)
 
     # ---- set pointer to staging buffer (0x0D -> E08000) ----
-    send_can(0x001, [0x0D, 0x01] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
-    VCU_response(0x002, data=[0x0D, 0x01], timeout=PTR_TIMEOUT_MS)
+    send_can(0x001, [0x0D, SESSION] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
+    VCU_response(0x002, data=[0x0D, SESSION], timeout=PTR_TIMEOUT_MS)
 
     offset = 0
     block_index = 0
@@ -190,15 +181,16 @@ def flash_hex(ctrl: CANController, ih: IntelHex, header80: List[int], *, do_flas
         len_m1 = this_len - 1
         commit = [0x0B, SESSION, 0x00, 0xE0, 0x80, 0x00, (len_m1 >> 8) & 0xFF, len_m1 & 0xFF]
         send_can(0x001, commit, delay=SEND_DELAY_MS)
-        VCU_response(0x002, data=[0x0B, SESSION, 0x01], timeout=3000)
+        VCU_response(0x002, data=[0x0B, SESSION, 0x01], timeout=COMMIT_TIMEOUT_MS)
 
         offset += this_len
         block_index += 1
 
         # ---- trace resets staging pointer only if another block follows ----
         if offset < total_len:
-            send_can(0x001, [0x0D, SESSION] + _u32_be(STAGING_ADDR), delay=500)
-            VCU_response(0x002, data=[0x0D, SESSION], timeout=3000)
+            # tightened: no 500ms sleep; reset immediately and wait for ack
+            send_can(0x001, [0x0D, SESSION] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
+            VCU_response(0x002, data=[0x0D, SESSION], timeout=PTR_TIMEOUT_MS)
 
     return {
         "status": "success",
