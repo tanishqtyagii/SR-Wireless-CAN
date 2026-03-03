@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="38542eba-7d7a-471e-8ede-511dad432029" name="pi">
+        <fileTransfer rootFolder="/home/tanishq/projects/mar2_testing" accessType="SFTP" host="doghouse.local" port="22" sshConfigId="34345bb4-83fe-4864-b3ef-03c663e75494" sshConfig="tanishq@doghouse.local:22 key" keyPair="true">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

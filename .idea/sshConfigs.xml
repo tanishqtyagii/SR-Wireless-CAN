@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="SshConfigs">
+    <configs>
+      <sshConfig host="doghouse.local" id="34345bb4-83fe-4864-b3ef-03c663e75494" keyPath="$USER_HOME$/.ssh/id_ed25519" port="22" nameFormat="DESCRIPTIVE" username="tanishq" useOpenSSHConfig="true" />
+    </configs>
+  </component>
+</project>

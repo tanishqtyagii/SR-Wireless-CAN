@@ -188,15 +188,15 @@ def flash_hex(ctrl: CANController, ih: IntelHex, header80: List[int], *, do_flas
         len_m1 = this_len - 1
         commit = [0x0B, SESSION, 0x00, 0xE0, 0x80, 0x00, (len_m1 >> 8) & 0xFF, len_m1 & 0xFF]
         send_can(0x001, commit, delay=SEND_DELAY_MS)
-        VCU_response(0x002, data=[0x0B, SESSION, 0x01], timeout=COMMIT_TIMEOUT_MS)
+        VCU_response(0x002, data=[0x0B, SESSION, 0x01], timeout=3000)
 
         offset += this_len
         block_index += 1
 
         # ---- trace resets staging pointer only if another block follows ----
         if offset < total_len:
-            send_can(0x001, [0x0D, SESSION] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
-            VCU_response(0x002, data=[0x0D, SESSION], timeout=PTR_TIMEOUT_MS)
+            send_can(0x001, [0x0D, SESSION] + _u32_be(STAGING_ADDR), delay=500)
+            VCU_response(0x002, data=[0x0D, SESSION], timeout=3000)
 
     return {
         "status": "success",

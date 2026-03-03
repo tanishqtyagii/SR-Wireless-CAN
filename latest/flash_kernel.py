@@ -10,7 +10,7 @@ def flash_kernel(ctrl: CANController) -> None:
     key_0x19_1 = ctrl.key_0x19_1
     key_0x19_2 = ctrl.key_0x19_2
     heartbeat = ctrl.heartbeat
-    d = 0.5  # ms inter-frame delay
+    d = 1  # ms inter-frame delay
 
     # Set Pointer
     send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xE0, 0x00, 0x00])
@@ -3685,14 +3685,14 @@ def flash_kernel(ctrl: CANController) -> None:
 
     # heartbeat
     send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
-    send_can(canid=0x001, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE, 0x00])
+    send_can(canid=0x001, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE, 0x01])
     VCU_response(canid=0x002, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE], timeout=1000)
 
     # Auth
     send_can(canid=0x001, data=key_0x19_1)
     VCU_response(canid=0x002, data=[0x19, 0x01, 0x01], timeout=1000)
 
-    send_can(canid=0x001, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE, 0x00])
+    send_can(canid=0x001, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE, 0x01])
     VCU_response(canid=0x002, data=[0x11, 0x01, 0x81, 0x16, 0x92, 0xAE], timeout=1000)
 
     send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
@@ -3702,7 +3702,89 @@ def flash_kernel(ctrl: CANController) -> None:
     send_can(canid=0x001, data=key_0x19_2)
     VCU_response(canid=0x002, data=[0x19, 0x01, 0x01], timeout=1000)
 
-    # ----------------------------
-    # Later heartbeat/auth repeats you listed (4516..4549 style)
-    # Same conversion: remove "if not", just call VCU_response() with timeout in ms.
-    # ----------------------------
+    # 4521) 45354.1  Rx  0001  7  11 01 81 16 92 AE 00
+    send_can(0x001, [0x11, 0x01] + session_token + [0x00], delay=724.3)
+
+    # 4522) 45354.8  Rx  0002  6  11 01 81 16 92 AE
+    VCU_response(0x002, data=[0x11, 0x01] + session_token)
+
+    # 4523) 46078.4  Rx  0001  7  11 FF 00 00 00 00 00
+    send_can(0x001, [0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00], delay=0.1)
+
+    # 4524) 46078.5  Rx  0001  7  11 01 81 16 92 AE 01
+    send_can(0x001, [0x11, 0x01] + session_token + [0x01], delay=0.9)
+
+    # 4525) 46079.4  Rx  0002  6  11 01 81 16 92 AE
+    VCU_response(0x002, data=[0x11, 0x01] + session_token)
+
+    # 4526) 46080.6  Rx  0001  6  19 01 F5 69 5A 48
+    send_can(0x001, key_0x19_1, delay=0.8)
+
+    # 4527) 46081.4  Rx  0002  3  19 01 01
+    VCU_response(0x002, data=[0x19, 0x01, 0x01])
+
+    # 4528) 46082.5  Rx  0001  7  11 01 81 16 92 AE 01
+    send_can(0x001, [0x11, 0x01] + session_token + [0x01], delay=0.8)
+
+    # 4529) 46083.3  Rx  0002  6  11 01 81 16 92 AE
+    VCU_response(0x002, data=[0x11, 0x01] + session_token)
+
+    # 4530) 46084.3  Rx  0001  6  18 01 F5 69 5A 48
+    # SKIP 0x18: would have been send_can(0x001, [0x18, 0x01, 0xF5, 0x69, 0x5A, 0x48], delay=0.7)
+
+    # 4531) 46085.0  Rx  0002  2  18 01
+    # SKIP 0x18 response: would have been VCU_response(0x002, data=[0x18, 0x01])
+
+    # 4532) 46086.1  Rx  0001  6  0D 01 00 C1 00 80
+    send_can(0x001, [0x0D, 0x01, 0x00, 0xC1, 0x00, 0x80], delay=0.7)
+
+    # 4533) 46086.8  Rx  0002  2  0D 01
+    VCU_response(0x002, data=[0x0D, 0x01])
+
+    # 4534) 46087.9  Rx  0001  6  10 01 00 01 DE 00
+    # SKIP 0x10: would have been send_can(0x001, [0x10, 0x01, 0x00, 0x01, 0xDE, 0x00], delay=44.1)
+
+    # 4535) 46132.0  Rx  0002  6  10 01 BE 55 B3 7D
+    # SKIP 0x10 response: would have been VCU_response(0x002, prefix=[0x10, 0x01])
+
+    # 4536) 46133.1  Rx  0001  7  11 FF 00 00 00 00 00
+    send_can(0x001, [0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00], delay=0.0)
+
+    # 4537) 46133.1  Rx  0001  7  11 01 81 16 92 AE 01
+    send_can(0x001, [0x11, 0x01] + session_token + [0x01], delay=0.9)
+
+    # 4538) 46134.0  Rx  0002  6  11 01 81 16 92 AE
+    VCU_response(0x002, data=[0x11, 0x01] + session_token)
+
+    # 4539) 46135.1  Rx  0001  6  19 01 C9 1E 2E CE
+    send_can(0x001, key_0x19_2, delay=0.7)
+
+    # 4540) 46135.8  Rx  0002  3  19 01 01
+    VCU_response(0x002, data=[0x19, 0x01, 0x01])
+
+    # 4541) 46136.8  Rx  0001  7  11 01 81 16 92 AE 00
+    send_can(0x001, [0x11, 0x01] + session_token + [0x00], delay=0.7)
+
+    # 4542) 46137.5  Rx  0002  6  11 01 81 16 92 AE
+    VCU_response(0x002, data=[0x11, 0x01] + session_token)
+
+    # 4543) 46895.5  Rx  0001  7  11 FF 00 00 00 00 00
+    send_can(0x001, [0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00], delay=2.2)
+
+    # 4544) 46897.7  Rx  0001  7  11 01 81 16 92 AE 01
+    send_can(0x001, [0x11, 0x01] + session_token + [0x01], delay=0.7)
+
+    # 4545) 46898.4  Rx  0002  6  11 01 81 16 92 AE
+    VCU_response(0x002, data=[0x11, 0x01] + session_token)
+
+    # 4546) 46921.9  Rx  0001  6  19 01 F5 69 5A 48
+    send_can(0x001, key_0x19_1, delay=0.7)
+
+    # 4547) 46922.6  Rx  0002  3  19 01 01
+    VCU_response(0x002, data=[0x19, 0x01, 0x01])
+
+    # 4548) 46935.9  Rx  0001  7  11 01 81 16 92 AE 01
+    send_can(0x001, [0x11, 0x01] + session_token + [0x01], delay=0.6)
+
+    # 4549) 46936.5  Rx  0002  6  11 01 81 16 92 AE
+    VCU_response(0x002, data=[0x11, 0x01] + session_token)

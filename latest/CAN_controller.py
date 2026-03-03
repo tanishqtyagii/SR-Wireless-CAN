@@ -80,6 +80,8 @@ class CANController:
             is_extended_id=False
             # DLC handled internally
         )
+
+        print(msg)
         self.bus.send(msg)
         time.sleep(delay / 1000)  # ms -> s (not a problem now since receivers on a diff thread)
 
@@ -106,7 +108,7 @@ class CANController:
             if remaining <= 0:
                 raise VCUTimeoutError(
                     canid=canid,
-                    timeout=timeout/1000,
+                    timeout=timeout,
                     expected_data=target,
                     expected_prefix=target_prefix,
                 )
@@ -141,7 +143,7 @@ class CANController:
 
         # Since we now have VCUTimeoutError
         try:
-            self.VCU_response(0x002, data=[0x11, 0x01] + self.session_token, timeout=0.5)
+            self.VCU_response(0x002, data=[0x11, 0x01] + self.session_token, timeout=500)
             print("VCU is still alive")
         except VCUTimeoutError:
             print("its dead")
