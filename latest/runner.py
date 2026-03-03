@@ -4,6 +4,7 @@ from bootloader import bootload
 from hex_transfer import flash_hex
 from finalization import finalize
 from intelhex import IntelHex
+import subprocess
 
 header80 = [
   0x00, 0x00, 0x06, 0x02, 0xEA, 0x27, 0xF4, 0x35, 0xEA, 0x17, 0xD7, 0xBE, 0x01, 0x00, 0x00, 0x00,
@@ -16,11 +17,26 @@ header80 = [
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x83, 0xC7, 0x74, 0x80
 ]
 
+def bring_can_up() -> None:
+    subprocess.run(["sudo", "ip", "link", "set", "can0", "down"], check=True)
+    time.sleep(1)
+    subprocess.run(["sudo", "ip", "link", "set", "can0", "type", "can", "bitrate", "500000"], check=True)
+    time.sleep(1)
+    subprocess.run(["sudo", "ip", "link", "set", "can0", "txqueuelen", "4096"], check=True)
+    time.sleep(1)# or 1024, 4096, etc.
+    subprocess.run(["sudo", "ip", "link", "set", "can0", "up"], check=True)
+    time.sleep(1)
+    print("done")
+
 file = "231_80kw.hex"
 
 def main() -> None:
     ctrl = CANController(interface="socketcan", channel="can0")
     try:
+        # 0) CAN init
+        bring_can_up()
+        time.sleep(3)
+
         # 1) Bootload / enter loader
         bootload(ctrl)
 
