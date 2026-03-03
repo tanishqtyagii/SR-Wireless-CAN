@@ -106,12 +106,13 @@ class CANController:
             if remaining <= 0:
                 raise VCUTimeoutError(
                     canid=canid,
-                    timeout=timeout,
+                    timeout=timeout/1000,
                     expected_data=target,
                     expected_prefix=target_prefix,
                 )
 
             msg = self.reader.get_message(timeout=remaining)
+            print(msg)
             if msg is None:
                 continue
 
@@ -142,10 +143,8 @@ class CANController:
         try:
             self.VCU_response(0x002, data=[0x11, 0x01] + self.session_token, timeout=0.5)
             print("VCU is still alive")
-            return True
         except VCUTimeoutError:
             print("its dead")
-            return False
 
     # To close the bus and reader thread
     def close(self) -> None:
@@ -200,5 +199,3 @@ def erase_plan_0x0C_frames(erase_start: int, length_to_clear: int,
         remaining -= this_len
 
     return frames
-
-

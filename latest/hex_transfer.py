@@ -92,7 +92,7 @@ def flash_hex(ctrl: CANController, ih: IntelHex, header80: List[int], *, do_flas
     BLOCK_SIZE = 0x8000
     CHUNK_SIZE = 6
     POLL_EVERY_FRAMES = 11          # 11 * 6 = 66 (0x42) typical
-    SEND_DELAY_MS = 1.0
+    SEND_DELAY_MS = 10
 
     PTR_TIMEOUT_MS = 1000
     POLL_TIMEOUT_MS = 1000

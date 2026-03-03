@@ -5,90 +5,95 @@ from CAN_controller import CANController
 def finalize(ctrl: CANController) -> dict:
     send_can = ctrl.send_can
     VCU_response = ctrl.VCU_response
-    heartbeat = ctrl.heartbeat
 
-    security_key = ctrl.key_0x17_1[2:]          # [0xF5, 0x69, 0x5A, 0x48]
-    security_key2 = [0xB6, 0xE0, 0xC2, 0xEC]    # constant across runs
+    token = ctrl.session_token  # [0x81, 0x16, 0x92, 0xAE]
 
-    def wait_for_stream(terminator: list[int], timeout_ms: float = 5000) -> bool:
+    # These should already exist on your controller exactly like you set them up:
+    key_0x19_2 = ctrl.key_0x19_2  # [0x19, 0x01, 0xC9, 0x1E, 0x2E, 0xCE]
+    key_0x19_1 = ctrl.key_0x19_1  # [0x19, 0x01, 0xF5, 0x69, 0x5A, 0x48]
+
+    # 0x18 seed used in your trace snippet: 18 01 F5 69 5A 48
+    # (you can swap if later you see the other constant seed being used)
+    key_0x18 = ctrl.key_0x17_1[:][2:]  # [0xF5, 0x69, 0x5A, 0x48] (derived)
+
+    def _expect_11_token(timeout_ms: float = 1000) -> None:
+        # Trace expects: 0002  11 01 81 16 92 AE  (6 bytes, no trailing mode byte)
+        VCU_response(canid=0x002, data=[0x11, 0x01] + token, timeout=timeout_ms)
+
+    def _auth_pair(key_19: list[int], mode_byte: int) -> None:
         """
-        Eat all frames until we see the terminator EXACTLY on 0x002.
-        Uses the BufferedReader (NOT bus.recv), so it plays nicely with Notifier.
+        Copies:
+          11 FF ...
+          11 01 <token> <mode>
+          expect 11 01 <token>
+          19 01 ....
+          expect 19 01 01
+          11 01 <token> <othermode>
+          expect 11 01 <token>
         """
-        end = time.monotonic() + (timeout_ms / 1000.0)
-        term = bytes(terminator)
+        # 28799 / 28806 / 28819 / 28826 / 28839 style
+        send_can(canid=0x001, data=[0x11, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
 
-        while True:
-            remaining_s = end - time.monotonic()
-            if remaining_s <= 0:
-                return False
+        # 28800 style
+        send_can(canid=0x001, data=[0x11, 0x01] + token + [mode_byte])
+        _expect_11_token(timeout_ms=1500)
 
-            msg = ctrl.reader.get_message(timeout=remaining_s)
-            if msg is None:
-                continue
+        # 28802 / 28809 style
+        send_can(canid=0x001, data=key_19)
+        VCU_response(canid=0x002, data=[0x19, 0x01, 0x01], timeout=1500)
 
-            if msg.arbitration_id != 0x002:
-                continue
+        # 28804 / 28811 style
+        other = 0x00 if mode_byte == 0x01 else 0x01
+        send_can(canid=0x001, data=[0x11, 0x01] + token + [other])
+        _expect_11_token(timeout_ms=1500)
 
-            if bytes(msg.data) == term:
-                return True
+    def _crc_check_block() -> None:
+        """
+        Copies:
+          18 01 F5 69 5A 48
+          expect 18 01
+          0D 01 00 C1 00 80
+          expect 0D 01
+          10 01 00 01 DE 00
+          expect 10 01 <4 bytes> (prefix)
+        """
+        # 28813
+        send_can(canid=0x001, data=[0x18, 0x01] + key_0x18)
+        VCU_response(canid=0x002, data=[0x18, 0x01], timeout=1500)
 
-    def security_handshake(key=None):
-        k = key if key is not None else security_key
-        send_can(canid=0x001, data=[0x18, 0x01] + k)
-        VCU_response(canid=0x002, data=[0x18, 0x01])
-
-    security_handshake()
-
-    send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xC1, 0x00, 0x80])
-    VCU_response(canid=0x002, data=[0x0D, 0x01])
-
-    send_can(canid=0x001, data=[0x10, 0x01, 0x00, 0x01, 0xDE, 0x00])
-    VCU_response(canid=0x002, prefix=[0x10, 0x01], timeout=1000)  # ms
-
-    # 04 stream 1
-    send_can(canid=0x001, data=[0x04, 0x01, 0x00, 0xC0, 0x7F, 0x00, 0x80])
-    if not wait_for_stream(terminator=[0x04, 0x01, 0x00, 0x00]):
-        raise Exception("04 stream 1 failed")
-
-    # 04 stream 2
-    send_can(canid=0x001, data=[0x04, 0x01, 0x00, 0xC1, 0x00, 0x00, 0x80])
-    if not wait_for_stream(terminator=[0x04, 0x01, 0x74, 0x80]):
-        raise Exception("04 stream 2 failed")
-
-    security_handshake(key=security_key2)  # 18 B6 E0 C2 EC
-
-    send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xC1, 0x00, 0x00])
-    VCU_response(canid=0x002, data=[0x0D, 0x01])
-
-    send_can(canid=0x001, data=[0x10, 0x01, 0x00, 0x00, 0x00, 0x7C])
-    VCU_response(canid=0x002, data=[0x10, 0x01, 0x80, 0x74, 0xC7, 0x83])
-
-    security_handshake()
-
-    send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xC1, 0x00, 0x80])
-    VCU_response(canid=0x002, data=[0x0D, 0x01])
-
-    send_can(canid=0x001, data=[0x10, 0x01, 0x00, 0x01, 0xDE, 0x00])
-    VCU_response(canid=0x002, prefix=[0x10, 0x01], timeout=1000)  # ms
-
-    # 04 stream 3
-    send_can(canid=0x001, data=[0x04, 0x01, 0x00, 0xC0, 0x7F, 0x80, 0x80])
-    if not wait_for_stream(terminator=[0x04, 0x01, 0x00, 0x00]):
-        raise Exception("04 stream 3 failed")
-
-    # HEARTBEAT LOOP
-    for _ in range(3):
-        heartbeat()
-        heartbeat()
-
-        security_handshake()
-
+        # 28815
         send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xC1, 0x00, 0x80])
-        VCU_response(canid=0x002, data=[0x0D, 0x01])
+        VCU_response(canid=0x002, data=[0x0D, 0x01], timeout=1500)
 
+        # 28817
         send_can(canid=0x001, data=[0x10, 0x01, 0x00, 0x01, 0xDE, 0x00])
-        VCU_response(canid=0x002, prefix=[0x10, 0x01], timeout=1000)  # ms
+        # 28818: response varies (it’s the CRC), so match prefix only
+        VCU_response(canid=0x002, prefix=[0x10, 0x01], timeout=60000)
+
+    # ---------------------------------------------------------------------
+    # This section matches your trace order (first big block shown)
+    # ---------------------------------------------------------------------
+
+    # 28799–28805
+    _auth_pair(key_19=key_0x19_2, mode_byte=0x01)
+
+    # 28806–28812
+    _auth_pair(key_19=key_0x19_1, mode_byte=0x01)
+
+    # 28813–28818
+    _crc_check_block()
+
+    # 28819–28825
+    _auth_pair(key_19=key_0x19_2, mode_byte=0x01)
+
+    # 28826–28832
+    _auth_pair(key_19=key_0x19_1, mode_byte=0x01)
+
+    # 28833–28838
+    _crc_check_block()
+
+    # 28839–28845 (ends mid-block in your pasted snippet)
+    _auth_pair(key_19=key_0x19_2, mode_byte=0x01)
 
     print("Finalization successful")
     return {"status": "success"}
