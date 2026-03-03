@@ -3788,4 +3788,3 @@ def flash_kernel(ctrl: CANController) -> None:
 
     # 4549) 46936.5  Rx  0002  6  11 01 81 16 92 AE
     VCU_response(0x002, data=[0x11, 0x01] + session_token)
-    VCU_response(0x002, data=[0x11, 0x01] + session_token)
