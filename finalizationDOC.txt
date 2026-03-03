@@ -1,21 +1,4 @@
-"""
-Host to VCU
-02 data check
 
-VCU to Host
-02 data ack
-
-Host to VCU
-0D 01 00 C2 80 00
-
-VCU to Host
-0D 01
-
-Host to VCU
-0b readiness check
-
-VCU to Host
-0b readiness echo
 
 Host to VCU
 18 01 F5 69 5A 48 - security handshake
