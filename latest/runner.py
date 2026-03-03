@@ -36,8 +36,6 @@ def main() -> None:
     try:
         # 0) CAN init
         # bring_can_up()
-        time.sleep(3)
-
         # 1) Bootload / enter loader
         bootload(ctrl)
 

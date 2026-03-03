@@ -81,7 +81,7 @@ class CANController:
             # DLC handled internally
         )
 
-        print(msg)
+        # print(msg)
         self.bus.send(msg)
         time.sleep(delay / 1000)  # ms -> s (not a problem now since receivers on a diff thread)
 
