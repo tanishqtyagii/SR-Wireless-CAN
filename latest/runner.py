@@ -35,7 +35,7 @@ def main() -> None:
     ctrl = CANController(interface="socketcan", channel="can0")
     try:
         # 0) CAN init
-        bring_can_up()
+        # bring_can_up()
         time.sleep(3)
 
         # 1) Bootload / enter loader
