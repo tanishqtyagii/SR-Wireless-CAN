@@ -1,4 +1,5 @@
 import { DragEvent, useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { useVcuApp } from "../hooks/useVcuApp";
 import { clearAllData } from "../services/api";
 import { Button } from "../components/ui/Button";
@@ -42,12 +43,27 @@ export default function FlashPage() {
   const [dragError, setDragError] = useState("");
   const [isDragReplace, setIsDragReplace] = useState(false);
   const [replaceNotice, setReplaceNotice] = useState("");
+  const [logOpen, setLogOpen] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll live log to bottom whenever new lines arrive
+  // Close log modal on Escape
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [liveLogs]);
+    const handleKey = (e: KeyboardEvent) => { if (e.key === "Escape") setLogOpen(false); };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, []);
+
+  // Auto-scroll live log to bottom whenever new lines arrive or modal opens
+  useEffect(() => {
+    if (logOpen) logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [liveLogs, logOpen]);
+
+  // Auto-open log when an operation starts
+  useEffect(() => {
+    if (vcuState === "bootloading" || vcuState === "flashing") {
+      setLogOpen(true);
+    }
+  }, [vcuState]);
 
   const clearFile = () => {
     setSelectedFile(null);
@@ -215,6 +231,20 @@ export default function FlashPage() {
             <StatusPill status={vcuState} className="!border-none !bg-transparent !p-0 !text-xs" />
           </div>
           <button
+            onClick={() => setLogOpen(true)}
+            className="relative flex items-center gap-2 border border-theme-border bg-theme-panel hover:bg-theme-panel-hover px-3 py-1.5 rounded-full transition-colors shadow-sm"
+            title="View operation log"
+          >
+            {/* Terminal icon */}
+            <svg className="w-3.5 h-3.5 text-theme-text-muted shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" />
+            </svg>
+            <span className="text-xs font-semibold text-theme-text">Log</span>
+            {(vcuState === "flashing" || vcuState === "bootloading") && (
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shrink-0" />
+            )}
+          </button>
+          <button
             onClick={async () => {
               if (!window.confirm("Clear all stored files and flash history? This cannot be undone.")) return;
               await clearAllData();
@@ -231,9 +261,10 @@ export default function FlashPage() {
 
       {/* Body Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 flex-1 min-h-0 w-full">
-        <div className="lg:col-span-9 flex flex-col min-h-0 gap-4">
-          <Panel className="flex-1 min-h-0 bg-theme-panel border border-theme-border shadow-sm">
-            <div className="h-full relative overflow-y-auto p-6">
+        <div className="lg:col-span-9 flex flex-col min-h-0">
+          <Panel className="flex-1 min-h-0 bg-theme-panel border border-theme-border shadow-sm flex flex-col">
+            {/* File / dropzone area */}
+            <div className="flex-1 min-h-0 overflow-y-auto p-6">
               {!selectedFile ? (
                 <div className="h-full flex items-center justify-center">
                   <Dropzone 
@@ -308,92 +339,51 @@ export default function FlashPage() {
                 </div>
               )}
             </div>
-          </Panel>
 
-          <Panel className="shrink-0 bg-theme-panel border border-theme-border shadow-sm">
-            <PanelHeader>
-              <PanelTitle>Execution Sequence</PanelTitle>
-            </PanelHeader>
-            <PanelContent className="p-4">
-              {errorMessage && (
-                <div className="mb-4">
-                  <InlineAlert variant="error" message={errorMessage} />
-                </div>
-              )}
-
+            {/* Execution area — flush to the bottom of the same card */}
+            <div className="shrink-0 border-t border-theme-border p-4 flex flex-col gap-4">
+              {errorMessage && <InlineAlert variant="error" message={errorMessage} />}
               {vcuIsBusy && !isBusy && (
-                <div className="mb-4">
-                  <InlineAlert variant="warning" message="VCU is currently flashing. All operations are locked until it returns to idle." />
-                </div>
+                <InlineAlert variant="warning" message="VCU is currently busy. All operations are locked until it returns to idle." />
               )}
 
-              <div className="flex items-stretch gap-4">
-                {/* Two-step flow */}
-                <div className="flex-1 grid grid-cols-2 gap-3">
-                  <div className="flex flex-col gap-1">
-                    <Button 
-                      variant="primary" 
-                      className="w-full py-3 font-semibold text-sm" 
-                      onClick={handleBoot} 
-                      disabled={isBusy || isEnteringBootloader || isBootloaded || vcuIsBusy}
-                      isLoading={isBusy && vcuState === "bootloading" && !selectedFile}
-                    >
-                      1. Enter Bootloader
-                    </Button>
-                  </div>
-
-                  <div className="flex flex-col gap-1">
-                    <Button 
-                      variant="outline" 
-                      className={`w-full py-3 font-semibold text-sm ${
-                        isBootloaded ? 'border-theme-primary text-theme-primary' : 'text-theme-text-muted'
-                      }`} 
-                      onClick={() => canFlash && onAction(handleFlashOnly)} 
-                      disabled={!canFlash || !isBootloaded || isBusy}
-                      isLoading={isBusy && vcuState === "flashing"}
-                    >
-                      2. Flash Binary
-                    </Button>
-                  </div>
-                </div>
-
-                {/* OR divider */}
-                <div className="flex flex-col items-center justify-center gap-1 shrink-0">
-                  <div className="w-px flex-1 bg-theme-border" />
-                  <span className="text-xs font-bold text-theme-text-muted px-1">OR</span>
-                  <div className="w-px flex-1 bg-theme-border" />
-                </div>
-
-                {/* Single-step shortcut */}
-                <div className="flex flex-col gap-1 w-48 shrink-0">
-                  <Button 
-                    variant="outline" 
-                    className="w-full py-3 font-semibold text-sm border-theme-border" 
-                    onClick={() => canFlash && onAction(handleBootAndFlash)} 
-                    disabled={!canFlash || isBusy}
-                    isLoading={isBusy && (vcuState === "bootloading" || vcuState === "bootloaded" || vcuState === "flashing")}
-                  >
-                    Bootload + Flash
-                  </Button>
-                </div>
+              <div className="grid grid-cols-2 gap-3">
+                <Button 
+                  variant="secondary" 
+                  className="w-full py-4 font-semibold text-sm tracking-wide" 
+                  onClick={handleBoot} 
+                  disabled={isBusy || isEnteringBootloader || isBootloaded || vcuIsBusy}
+                  isLoading={isBusy && vcuState === "bootloading" && !selectedFile}
+                >
+                  BOOTLOAD
+                </Button>
+                <Button 
+                  variant="secondary" 
+                  className="w-full py-4 font-semibold text-sm tracking-wide" 
+                  onClick={() => canFlash && onAction(handleFlashOnly)} 
+                  disabled={!canFlash || !isBootloaded || isBusy}
+                  isLoading={isBusy && vcuState === "flashing"}
+                >
+                  FLASH FILE
+                </Button>
               </div>
 
-              <div className="mt-4 pt-3 border-t border-theme-border text-center">
-                <div className="text-xs text-theme-text-muted mb-1">Status</div>
-                <div className="text-sm font-medium text-theme-text">
-                  {vcuState === "flashing"
-                    ? `Flashing...`
-                    : vcuState === "bootloading"
-                    ? "Entering bootloader..."
-                    : vcuState === "bootloaded"
-                    ? "Bootloaded - ready to flash"
-                    : isBusy
-                    ? "Working..."
-                    : "Waiting for sequence"}
-                </div>
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-px bg-theme-border" />
+                <span className="text-xs font-bold text-theme-text-muted">OR</span>
+                <div className="flex-1 h-px bg-theme-border" />
               </div>
 
-            </PanelContent>
+              <Button 
+                variant="primary" 
+                className="w-full py-4 font-semibold text-sm tracking-wide" 
+                onClick={() => canFlash && onAction(handleBootAndFlash)} 
+                disabled={!canFlash || isBusy}
+                isLoading={isBusy && (vcuState === "bootloading" || vcuState === "bootloaded" || vcuState === "flashing")}
+              >
+                BOOTLOAD + FLASH FILE
+              </Button>
+            </div>
           </Panel>
         </div>
 
@@ -439,38 +429,92 @@ export default function FlashPage() {
             </PanelContent>
           </Panel>
 
-          {/* Live log — always visible */}
-          <Panel className="shrink-0 bg-theme-panel border border-theme-border shadow-sm">
-            <PanelHeader>
-              <div className="flex items-center gap-2">
-                <PanelTitle>Log</PanelTitle>
+        </div>
+
+      {/* Log modal */}
+      {logOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-theme-overlay backdrop-blur-sm"
+          onClick={() => setLogOpen(false)}
+        >
+          <div
+            className="w-full max-w-3xl mx-4 rounded-xl bg-theme-panel border border-theme-border shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-theme-border">
+              <div className="flex items-center gap-2.5">
+                <span className="text-sm font-semibold text-theme-text">Operation Log</span>
                 {(vcuState === "flashing" || vcuState === "bootloading") && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                  <span className="flex items-center gap-1.5 text-[10px] font-semibold tracking-widest uppercase text-green-400">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                    LIVE
+                  </span>
                 )}
               </div>
-            </PanelHeader>
-            <PanelContent className="p-0">
-              <div className="bg-black h-36 overflow-y-auto p-3 font-mono text-xs leading-relaxed rounded-b">
-                {liveLogs.length === 0 ? (
-                  <span className="text-gray-600">No active operation.</span>
-                ) : liveLogs.map((line, i) => {
-                  const isPowerCycle = /power.?cycle/i.test(line);
-                  const isError = /error|fail/i.test(line);
-                  const isSuccess = /success|complete|done/i.test(line);
-                  return (
-                    <div key={i} className={
+              <div className="flex items-center gap-3">
+                {liveLogs.length > 0 && (
+                  <span className="text-xs text-theme-text-muted font-mono">{liveLogs.length} lines</span>
+                )}
+                <button
+                  onClick={() => setLogOpen(false)}
+                  className="p-1.5 text-theme-text-muted hover:text-theme-text hover:bg-theme-panel-hover rounded-full transition-colors"
+                  aria-label="Close"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+
+            {/* Log body */}
+            <div className="h-96 overflow-y-auto p-4 font-mono text-xs leading-relaxed bg-theme-bg">
+              {liveLogs.length === 0 ? (
+                <div className="h-full flex items-center justify-center">
+                  <span className="text-theme-text-muted text-xs">No active operation.</span>
+                </div>
+              ) : liveLogs.map((line, i) => {
+                const match = line.match(/^\[([^\]]+)\]\s*(.*)$/);
+                const rawTs = match ? match[1] : null;
+                const msg = match ? match[2] : line;
+                let ts: string | null = null;
+                if (rawTs) {
+                  const d = new Date(rawTs);
+                  ts = isNaN(d.getTime()) ? rawTs : d.toLocaleTimeString("en-US", {
+                    timeZone: "America/Los_Angeles",
+                    hour: "numeric",
+                    minute: "2-digit",
+                    second: "2-digit",
+                    hour12: true,
+                  }) + " PST";
+                }
+                const isPowerCycle = /power.?cycle/i.test(line);
+                const isError = /error|fail/i.test(msg);
+                const isSeparator = line.startsWith("────");
+                const isSuccess = /success|complete|done|acknowledged/i.test(msg);
+                const isInfo = /starting|uploading|entering|running|vcu/i.test(msg);
+
+                if (isSeparator) {
+                  return <div key={i} className="text-theme-border my-2 select-none">{line}</div>;
+                }
+
+                return (
+                  <div key={i} className="flex gap-2 py-[1px]">
+                    {ts && <span className="shrink-0 text-theme-text-muted opacity-40">{ts}</span>}
+                    <span className={
                       isPowerCycle ? "text-red-400 font-bold" :
                       isError ? "text-red-400" :
                       isSuccess ? "text-green-400" :
-                      "text-gray-400"
-                    }>{line}</div>
-                  );
-                })}
-                <div ref={logEndRef} />
-              </div>
-            </PanelContent>
-          </Panel>
+                      isInfo ? "text-sky-400" :
+                      "text-theme-text"
+                    }>{msg || line}</span>
+                  </div>
+                );
+              })}
+              <div ref={logEndRef} />
+            </div>
+          </div>
         </div>
+      )}
       </div>
 
       <DetailDrawer isOpen={!!drawerItem} onClose={() => setDrawerItem(null)} title="Flash Details">

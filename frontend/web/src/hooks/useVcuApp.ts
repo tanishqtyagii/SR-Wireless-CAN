@@ -71,11 +71,17 @@ export function useVcuApp() {
     if (!activeHistoryId) return;
 
     // Append a separator so previous logs stay visible
-    const ts = new Date().toLocaleTimeString();
+    const ts = new Date().toLocaleTimeString("en-US", {
+      timeZone: "America/Los_Angeles",
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
     accumulatedLogsRef.current = [
       ...accumulatedLogsRef.current,
       "",
-      `── Operation ${activeHistoryId}  ${ts} ──────────────────────`,
+      `── Operation ${activeHistoryId}  ${ts} PST ──────────────────────`,
     ];
     lastOpLogCountRef.current = 0;
     setLiveLogs([...accumulatedLogsRef.current]);
