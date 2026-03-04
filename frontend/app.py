@@ -3,6 +3,8 @@ import re
 import sys
 import threading
 import time
+import ast
+import io
 from datetime import datetime, timezone
 
 
@@ -14,6 +16,57 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 import db.schema as db
+
+LATEST_DIR = os.path.join(ROOT_DIR, "latest")
+if LATEST_DIR not in sys.path:
+    sys.path.insert(0, LATEST_DIR)
+
+from CAN_controller import CANController
+from bootloader import bootload as run_bootload
+from finalization import finalize as run_finalize
+from hex_transfer import hex_transfer as run_hex_transfer
+from intelhex import IntelHex
+
+# ── Power-cycle flag ──────────────────────────────────────────────────────────
+
+_power_cycle_lock = threading.Lock()
+_power_cycle_active: bool = False
+
+
+def _set_power_cycle(val: bool) -> None:
+    global _power_cycle_active
+    with _power_cycle_lock:
+        _power_cycle_active = val
+
+
+def _get_power_cycle() -> bool:
+    with _power_cycle_lock:
+        return _power_cycle_active
+
+
+class _PowerCycleInterceptor:
+    """Wraps sys.stdout; fires _set_power_cycle(True) on the first power-cycle print."""
+
+    def __init__(self, underlying, on_line=None):
+        self._underlying = underlying
+        self._on_line = on_line
+
+    def write(self, text: str):
+        if "POWER CYCLE" in text.upper():
+            _set_power_cycle(True)
+        if self._on_line and text:
+            for line in text.splitlines():
+                cleaned = line.strip()
+                if cleaned:
+                    self._on_line(cleaned)
+        return self._underlying.write(text)
+
+    def flush(self):
+        return self._underlying.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._underlying, name)
+
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
@@ -72,37 +125,126 @@ def _is_hex_upload(filename: str | None) -> bool:
     return bool(filename) and filename.lower().endswith(".hex")
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_header80() -> list[int]:
+    runner_path = os.path.join(LATEST_DIR, "runner.py")
+    with open(runner_path, "r", encoding="utf-8") as f:
+        source = f.read()
+    tree = ast.parse(source, filename=runner_path)
+
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "header80":
+                    value = ast.literal_eval(node.value)
+                    if isinstance(value, list) and len(value) == 0x80:
+                        return [int(x) & 0xFF for x in value]
+    raise ValueError("Could not load header80 from latest/runner.py")
+
+
+def _load_hex_lenient(path: str) -> IntelHex:
+    try:
+        return IntelHex(path)
+    except Exception:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+
+        fixed_lines: list[str] = []
+        for line in content.splitlines():
+            raw = line.strip()
+            if not raw:
+                continue
+            if raw.startswith(":"):
+                fixed_lines.append("".join(raw.split()))
+
+        if not fixed_lines:
+            raise
+
+        ih = IntelHex()
+        ih.loadhex(io.StringIO("\n".join(fixed_lines) + "\n"))
+        return ih
+
+
 # ── Background flash threads ──────────────────────────────────────────────────
 
 def _run_boot_and_flash(file_id: str, display_name: str, history_id: str) -> None:
-    """
-    Simulates the boot + flash sequence.
-    Replace the time.sleep() calls with real CAN bus communication when ready.
-    """
+    """Run real boot + flash using latest/ pipeline."""
     logs: list[str] = []
+    started_at = time.monotonic()
+
+    interface = os.getenv("FLASH_CAN_INTERFACE", "socketcan")
+    channel = os.getenv("FLASH_CAN_CHANNEL", "can0")
+    do_kernel = _env_flag("FLASH_DO_KERNEL", True)
+    do_erase = _env_flag("FLASH_DO_ERASE", True)
+    do_finalize = _env_flag("FLASH_DO_FINALIZE", True)
 
     def log(msg: str) -> None:
         logs.append(f"[{_now()}] {msg}")
         db.update_flash_history_entry(history_id, logs=list(logs))
 
     try:
+        path = _hex_path(file_id)
         log(f"Starting boot + flash sequence for {display_name}")
-        time.sleep(5)
-        log("Entering bootloader mode...")
-        time.sleep(8)
-        log("Bootloader acknowledged")
-        time.sleep(3)
-        log(f"Uploading binary ({_size_kb(file_id):.1f} KB)...")
-        time.sleep(14)
-        log("Flash complete.")
+        log(f"CAN interface={interface}, channel={channel}")
+
+        ctrl = CANController(interface=interface, channel=channel)
+        try:
+            log("Entering bootloader mode...")
+            _old_stdout = sys.stdout
+            sys.stdout = _PowerCycleInterceptor(sys.stdout, on_line=log)
+            try:
+                run_bootload(ctrl)
+            finally:
+                sys.stdout = _old_stdout
+                _set_power_cycle(False)
+            log("Bootloader acknowledged")
+
+            log(f"Uploading binary ({_size_kb(file_id):.1f} KB)...")
+            ih = _load_hex_lenient(path)
+            header80 = _load_header80()
+            result = run_hex_transfer(
+                ctrl,
+                ih,
+                header80,
+                do_flash_kernel=do_kernel,
+                do_erase=do_erase,
+            )
+            log(f"Flash complete: blocks={result.get('blocks')} total_len={result.get('total_len')}")
+
+            if do_finalize:
+                log("Running finalization...")
+                run_finalize(ctrl)
+                log("Finalization complete")
+        finally:
+            ctrl.close()
+
+        duration_ms = int((time.monotonic() - started_at) * 1000)
         log("VCU returned to idle state")
 
         db.update_hex_file_after_flash(file_id, "success")
-        db.update_flash_history_entry(history_id, status="success", logs=list(logs))
+        db.update_flash_history_entry(
+            history_id,
+            status="success",
+            duration_ms=duration_ms,
+            logs=list(logs),
+        )
 
     except Exception as exc:  # noqa: BLE001
         log(f"Error: {exc}")
-        db.update_flash_history_entry(history_id, status="failed", error=str(exc), logs=list(logs))
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        db.update_flash_history_entry(
+            history_id,
+            status="failed",
+            error=str(exc),
+            duration_ms=duration_ms,
+            logs=list(logs),
+        )
         db.update_hex_file_after_flash(file_id, "failed")
 
     finally:
@@ -110,32 +252,68 @@ def _run_boot_and_flash(file_id: str, display_name: str, history_id: str) -> Non
 
 
 def _run_flash_only(file_id: str, display_name: str, history_id: str) -> None:
-    """
-    Simulates a flash-only sequence (VCU already in bootloading mode).
-    Replace the time.sleep() calls with real CAN bus communication when ready.
-    """
+    """Run real flash-only using latest/ pipeline (no bootload step)."""
     logs: list[str] = []
+    started_at = time.monotonic()
+
+    interface = os.getenv("FLASH_CAN_INTERFACE", "socketcan")
+    channel = os.getenv("FLASH_CAN_CHANNEL", "can0")
+    do_kernel = _env_flag("FLASH_DO_KERNEL", False)
+    do_erase = _env_flag("FLASH_DO_ERASE", True)
+    do_finalize = _env_flag("FLASH_DO_FINALIZE", True)
 
     def log(msg: str) -> None:
         logs.append(f"[{_now()}] {msg}")
         db.update_flash_history_entry(history_id, logs=list(logs))
 
     try:
+        path = _hex_path(file_id)
         log(f"Starting flash-only sequence for {display_name}")
-        time.sleep(2)
-        log("VCU already in bootloader mode")
-        time.sleep(3)
-        log(f"Uploading binary ({_size_kb(file_id):.1f} KB)...")
-        time.sleep(25)
-        log("Flash complete.")
+        log(f"CAN interface={interface}, channel={channel}")
+
+        ctrl = CANController(interface=interface, channel=channel)
+        try:
+            log("VCU already in bootloader mode")
+            log(f"Uploading binary ({_size_kb(file_id):.1f} KB)...")
+            ih = _load_hex_lenient(path)
+            header80 = _load_header80()
+            result = run_hex_transfer(
+                ctrl,
+                ih,
+                header80,
+                do_flash_kernel=do_kernel,
+                do_erase=do_erase,
+            )
+            log(f"Flash complete: blocks={result.get('blocks')} total_len={result.get('total_len')}")
+
+            if do_finalize:
+                log("Running finalization...")
+                run_finalize(ctrl)
+                log("Finalization complete")
+        finally:
+            ctrl.close()
+
+        duration_ms = int((time.monotonic() - started_at) * 1000)
         log("VCU returned to idle state")
 
         db.update_hex_file_after_flash(file_id, "success")
-        db.update_flash_history_entry(history_id, status="success", logs=list(logs))
+        db.update_flash_history_entry(
+            history_id,
+            status="success",
+            duration_ms=duration_ms,
+            logs=list(logs),
+        )
 
     except Exception as exc:  # noqa: BLE001
         log(f"Error: {exc}")
-        db.update_flash_history_entry(history_id, status="failed", error=str(exc), logs=list(logs))
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        db.update_flash_history_entry(
+            history_id,
+            status="failed",
+            error=str(exc),
+            duration_ms=duration_ms,
+            logs=list(logs),
+        )
         db.update_hex_file_after_flash(file_id, "failed")
 
     finally:
@@ -146,7 +324,7 @@ def _run_flash_only(file_id: str, display_name: str, history_id: str) -> None:
 
 @app.get("/api/vcu-state")
 def get_vcu_state():
-    return jsonify({"state": db.get_vcu_state()})
+    return jsonify({"state": db.get_vcu_state(), "powerCycle": _get_power_cycle()})
 
 
 # ── Hex Files ─────────────────────────────────────────────────────────────────
@@ -209,6 +387,14 @@ def list_flash_history():
     return jsonify(db.list_flash_history())
 
 
+@app.get("/api/flash-history/<entry_id>/logs")
+def get_flash_logs(entry_id: str):
+    entry = db.get_flash_history_entry(entry_id)
+    if not entry:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify({"logs": entry.get("logs") or [], "status": entry.get("status")})
+
+
 @app.patch("/api/flash-history/<entry_id>/notes")
 def update_notes(entry_id: str):
     body = request.get_json(silent=True) or {}
@@ -227,13 +413,50 @@ def bootload_only():
         current = db.get_vcu_state()
         return jsonify({"error": f"VCU is currently busy ({current}). Wait for it to return to idle."}), 409
 
-    # Simulate 3-second handshake, then stay in bootloading until flash arrives.
+    interface = os.getenv("FLASH_CAN_INTERFACE", "socketcan")
+    channel = os.getenv("FLASH_CAN_CHANNEL", "can0")
+
+    logs: list[str] = []
+    history = db.add_flash_history(
+        file_id=None,
+        name="Bootload",
+        status="pending",
+        action="bootload",
+        logs=[f"[{_now()}] Starting bootloader handshake"],
+    )
+    history_id = history["id"]
+
+    def log(msg: str) -> None:
+        logs.append(f"[{_now()}] {msg}")
+        db.update_flash_history_entry(history_id, logs=list(logs))
+
+    # Real handshake; on success transition bootloading → bootloaded so the UI
+    # shows the VCU is sitting in bootloader mode and ready for a flash-only.
     def _handshake():
-        time.sleep(3)
-        # Intentionally does NOT reset state - stays in "bootloading"
+        try:
+            ctrl = CANController(interface=interface, channel=channel)
+            try:
+                _old_stdout = sys.stdout
+                sys.stdout = _PowerCycleInterceptor(sys.stdout, on_line=log)
+                try:
+                    run_bootload(ctrl)
+                finally:
+                    sys.stdout = _old_stdout
+                    _set_power_cycle(False)
+            finally:
+                ctrl.close()
+            # Success — VCU is now in bootloader mode, ready for flash
+            log("Bootloader acknowledged")
+            db.update_flash_history_entry(history_id, status="success", logs=list(logs))
+            db.set_vcu_state("bootloaded")
+        except Exception as exc:  # noqa: BLE001
+            _set_power_cycle(False)
+            log(f"Error: {exc}")
+            db.update_flash_history_entry(history_id, status="failed", error=str(exc), logs=list(logs))
+            db.set_vcu_state("idle")
 
     threading.Thread(target=_handshake, daemon=True).start()
-    return jsonify({"state": "bootloading"})
+    return jsonify({"state": "bootloading", "historyId": history_id})
 
 
 @app.post("/api/boot-and-flash")
@@ -287,17 +510,17 @@ def flash_only():
     if "file" not in request.files:
         return jsonify({"error": "Missing file field"}), 400
 
-    # Atomic: only succeeds if state is exactly "bootloading" right now.
+    # Atomic: only succeeds if state is exactly "bootloaded" right now.
     # If two requests race, SQLite serialises the writes — only one wins.
-    if not db.try_transition_vcu_state("bootloading", "flashing"):
+    if not db.try_transition_vcu_state("bootloaded", "flashing"):
         current = db.get_vcu_state()
         if current == "flashing":
             return jsonify({"error": "VCU is currently flashing. Wait for it to finish."}), 409
-        return jsonify({"error": f"VCU must be in bootloading mode before flashing (currently: {current})."}), 409
+        return jsonify({"error": f"VCU must be in bootloaded mode before flashing (currently: {current})."}), 409
 
     f = request.files["file"]
     if not _is_hex_upload(f.filename):
-        db.set_vcu_state("bootloading")
+        db.set_vcu_state("bootloaded")
         return jsonify({"error": "Only .hex files are allowed."}), 400
     display_name = (
         request.form.get("display_name") or request.form.get("displayName") or ""

@@ -69,7 +69,7 @@ def init_db() -> None:
             conn.execute("ALTER TABLE flash_history ADD COLUMN operator TEXT")
         # Reset any stale in-progress state left over from a previous crash or
         # restart. Background flash threads don't survive a process restart, so
-        # any "bootloading" or "flashing" value in the DB is guaranteed stale.
+        # any "bootloading", "bootloaded", or "flashing" value in the DB is guaranteed stale.
         conn.execute(
             "UPDATE vcu_state SET state = 'idle' WHERE id = 1 AND state != 'idle'"
         )
@@ -240,7 +240,7 @@ def list_flash_history(limit: int = 250) -> list[dict]:
 
 def add_flash_history(
     *,
-    file_id: str,
+    file_id: str | None,
     name: str,
     status: str,
     action: str,
@@ -264,6 +264,14 @@ def add_flash_history(
             "SELECT * FROM flash_history WHERE id = ?", (new_id,)
         ).fetchone()
         return _history_row(row)
+
+
+def get_flash_history_entry(history_id: str) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM flash_history WHERE id = ?", (history_id,)
+        ).fetchone()
+        return _history_row(row) if row else None
 
 
 def update_flash_history_entry(history_id: str, **kwargs) -> None:

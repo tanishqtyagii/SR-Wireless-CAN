@@ -1,9 +1,10 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useVcuStore } from "../store/vcuStore";
 import {
   bootAndFlash,
   bootloadOnly,
   fetchFlashHistory,
+  fetchFlashLogs,
   fetchVcuState,
   flashOnly,
   getStoredHexFile,
@@ -14,13 +15,20 @@ import { subscribeToBroadcast } from "../services/ws";
 import { FlashHistoryEntry } from "../types";
 
 export function useVcuApp() {
-  const { setVcuState, vcuState } = useVcuStore();
+  const { setVcuState, vcuState, setPowerCycleNeeded, powerCycleNeeded } = useVcuStore();
   
   const [history, setHistory] = useState<FlashHistoryEntry[]>([]);
   
   const [isBusy, setIsBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [backendDown, setBackendDown] = useState(false);
+  const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
+  const [liveLogs, setLiveLogs] = useState<string[]>([]);
+  const livePollRef = useRef<number | null>(null);
+  // Accumulated logs that persist across all operations for the lifetime of the page
+  const accumulatedLogsRef = useRef<string[]>([]);
+  // How many lines from the current operation we've already appended
+  const lastOpLogCountRef = useRef<number>(0);
 
   const refreshData = useCallback(async () => {
     try {
@@ -34,6 +42,7 @@ export function useVcuApp() {
       if (statePayload?.state) {
         setVcuState(statePayload.state);
       }
+      setPowerCycleNeeded(statePayload?.powerCycle ?? false);
     } catch (err: unknown) {
       // TypeError = raw network failure; HTTP 5xx = Vite proxy couldn't reach backend
       const isNetworkError = err instanceof TypeError;
@@ -52,6 +61,55 @@ export function useVcuApp() {
     const pollHandle = window.setInterval(refreshData, 5000);
     return () => window.clearInterval(pollHandle);
   }, [refreshData]);
+
+  // Fast log polling while an operation is running
+  useEffect(() => {
+    if (livePollRef.current !== null) {
+      window.clearInterval(livePollRef.current);
+      livePollRef.current = null;
+    }
+    if (!activeHistoryId) return;
+
+    // Append a separator so previous logs stay visible
+    const ts = new Date().toLocaleTimeString();
+    accumulatedLogsRef.current = [
+      ...accumulatedLogsRef.current,
+      "",
+      `── Operation ${activeHistoryId}  ${ts} ──────────────────────`,
+    ];
+    lastOpLogCountRef.current = 0;
+    setLiveLogs([...accumulatedLogsRef.current]);
+
+    livePollRef.current = window.setInterval(async () => {
+      try {
+        const data = await fetchFlashLogs(activeHistoryId);
+        const allLines: string[] = data.logs ?? [];
+        const newLines = allLines.slice(lastOpLogCountRef.current);
+        if (newLines.length > 0) {
+          accumulatedLogsRef.current = [...accumulatedLogsRef.current, ...newLines];
+          lastOpLogCountRef.current = allLines.length;
+          setLiveLogs([...accumulatedLogsRef.current]);
+        }
+        // Once terminal status arrives, do one final refresh then stop
+        if (data.status === "success" || data.status === "failed") {
+          if (livePollRef.current !== null) {
+            window.clearInterval(livePollRef.current);
+            livePollRef.current = null;
+          }
+          await refreshData();
+        }
+      } catch {
+        // ignore transient errors
+      }
+    }, 400);
+
+    return () => {
+      if (livePollRef.current !== null) {
+        window.clearInterval(livePollRef.current);
+        livePollRef.current = null;
+      }
+    };
+  }, [activeHistoryId, refreshData]);
 
   // Instant cross-tab/cross-window sync via BroadcastChannel
   useEffect(() => {
@@ -74,7 +132,12 @@ export function useVcuApp() {
     setErrorMessage("");
 
     try {
-      await action();
+      const result = await action();
+      // Capture historyId if the action returned one
+      const historyId = (result as { historyId?: string } | null)?.historyId;
+      if (historyId) {
+        setActiveHistoryId(historyId);
+      }
       await refreshData();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Action failed";
@@ -99,6 +162,9 @@ export function useVcuApp() {
     isBusy,
     backendDown,
     errorMessage,
+    powerCycleNeeded,
+    liveLogs,
+    activeHistoryId,
     handleBoot,
     handleBootAndFlash,
     handleFlashOnly,

@@ -1,2 +1,4 @@
 flask>=3.0
 flask-cors>=4.0
+python-can>=4.4
+intelhex>=2.3

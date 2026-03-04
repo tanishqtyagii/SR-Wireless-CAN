@@ -1,4 +1,4 @@
-export type VcuState = "idle" | "bootloading" | "flashing" | "error";
+export type VcuState = "idle" | "bootloading" | "bootloaded" | "flashing" | "error";
 export type FlashStatus = "success" | "failed" | "unknown" | "pending";
 
 export interface FlashHistoryEntry {

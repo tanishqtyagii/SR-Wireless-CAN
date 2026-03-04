@@ -15,7 +15,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 export const fetchFlashHistory = (): Promise<FlashHistoryEntry[]> =>
   apiFetch("/flash-history");
 
-export const fetchVcuState = (): Promise<{ state: VcuState }> =>
+export const fetchVcuState = (): Promise<{ state: VcuState; powerCycle?: boolean }> =>
   apiFetch("/vcu-state");
 
 export const bootloadOnly = () =>
@@ -26,6 +26,9 @@ export const bootAndFlash = (formData: FormData) =>
 
 export const flashOnly = (formData: FormData) =>
   apiFetch("/flash-only", { method: "POST", body: formData });
+
+export const fetchFlashLogs = (entryId: string): Promise<{ logs: string[]; status: string }> =>
+  apiFetch(`/flash-history/${entryId}/logs`);
 
 export const updateFlashHistoryNotes = (entryId: string, notes: string) =>
   apiFetch(`/flash-history/${entryId}/notes`, {

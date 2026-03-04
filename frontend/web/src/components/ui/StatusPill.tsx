@@ -24,7 +24,13 @@ export function StatusPill({ status, className = "", size = "md" }: StatusPillPr
     case 'pending':
       bg = "bg-yellow-100 border-yellow-300";
       text = "text-yellow-800";
-      dot = "bg-yellow-500";
+      dot = "bg-yellow-500 animate-pulse";
+      break;
+    case 'bootloaded':
+      bg = "bg-teal-100 border-teal-300";
+      text = "text-teal-800";
+      dot = "bg-teal-500";
+      label = "BOOTLOADED";
       break;
     case 'flashing':
       bg = "bg-blue-100 border-blue-300";

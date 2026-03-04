@@ -1,4 +1,4 @@
-import { DragEvent, useEffect, useState } from "react";
+import { DragEvent, useEffect, useRef, useState } from "react";
 import { useVcuApp } from "../hooks/useVcuApp";
 import { clearAllData } from "../services/api";
 import { Button } from "../components/ui/Button";
@@ -19,7 +19,9 @@ export default function FlashPage() {
     history, 
     isBusy,
     backendDown,
-    errorMessage, 
+    errorMessage,
+    powerCycleNeeded,
+    liveLogs,
     handleBoot, 
     handleBootAndFlash, 
     handleFlashOnly,
@@ -40,6 +42,12 @@ export default function FlashPage() {
   const [dragError, setDragError] = useState("");
   const [isDragReplace, setIsDragReplace] = useState(false);
   const [replaceNotice, setReplaceNotice] = useState("");
+  const logEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll live log to bottom whenever new lines arrive
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [liveLogs]);
 
   const clearFile = () => {
     setSelectedFile(null);
@@ -56,7 +64,8 @@ export default function FlashPage() {
     setTimeout(() => setReplaceNotice(""), 3000);
   };
 
-  const isBootloading = vcuState === "bootloading";
+  const isEnteringBootloader = vcuState === "bootloading";
+  const isBootloaded = vcuState === "bootloaded";
   const vcuIsBusy = vcuState === "flashing";
   const canFlash = selectedFile && !isBusy && !vcuIsBusy;
 
@@ -150,6 +159,14 @@ export default function FlashPage() {
 
   return (
     <div className="min-h-screen bg-theme-bg text-theme-text font-sans flex flex-col p-4 gap-4 h-screen overflow-hidden">
+      {/* Power-cycle banner */}
+      {powerCycleNeeded && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-3 px-5 py-3 rounded-lg border border-red-500 bg-theme-bg shadow-lg">
+          <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
+          <span className="text-sm font-bold text-red-400 uppercase tracking-widest">Power cycle the car</span>
+        </div>
+      )}
+
       {!operatorName && (
         <NameModal onConfirm={(name) => {
           localStorage.setItem(OPERATOR_KEY, name);
@@ -318,7 +335,7 @@ export default function FlashPage() {
                       variant="primary" 
                       className="w-full py-3 font-semibold text-sm" 
                       onClick={handleBoot} 
-                      disabled={isBusy || isBootloading || vcuIsBusy}
+                      disabled={isBusy || isEnteringBootloader || isBootloaded || vcuIsBusy}
                       isLoading={isBusy && vcuState === "bootloading" && !selectedFile}
                     >
                       1. Enter Bootloader
@@ -329,10 +346,10 @@ export default function FlashPage() {
                     <Button 
                       variant="outline" 
                       className={`w-full py-3 font-semibold text-sm ${
-                        isBootloading ? 'border-theme-primary text-theme-primary' : 'text-theme-text-muted'
+                        isBootloaded ? 'border-theme-primary text-theme-primary' : 'text-theme-text-muted'
                       }`} 
                       onClick={() => canFlash && onAction(handleFlashOnly)} 
-                      disabled={!canFlash || !isBootloading || isBusy}
+                      disabled={!canFlash || !isBootloaded || isBusy}
                       isLoading={isBusy && vcuState === "flashing"}
                     >
                       2. Flash Binary
@@ -354,7 +371,7 @@ export default function FlashPage() {
                     className="w-full py-3 font-semibold text-sm border-theme-border" 
                     onClick={() => canFlash && onAction(handleBootAndFlash)} 
                     disabled={!canFlash || isBusy}
-                    isLoading={isBusy && (vcuState === "bootloading" || vcuState === "flashing")}
+                    isLoading={isBusy && (vcuState === "bootloading" || vcuState === "bootloaded" || vcuState === "flashing")}
                   >
                     Bootload + Flash
                   </Button>
@@ -367,17 +384,20 @@ export default function FlashPage() {
                   {vcuState === "flashing"
                     ? `Flashing...`
                     : vcuState === "bootloading"
-                    ? "Ready to flash"
+                    ? "Entering bootloader..."
+                    : vcuState === "bootloaded"
+                    ? "Bootloaded - ready to flash"
                     : isBusy
                     ? "Working..."
                     : "Waiting for sequence"}
                 </div>
               </div>
+
             </PanelContent>
           </Panel>
         </div>
 
-        {/* RIGHT COLUMN: History */}
+        {/* RIGHT COLUMN: History + Live Log */}
         <div className="lg:col-span-3 flex flex-col gap-4 min-h-0">
           <Panel className="flex-1 min-h-0 bg-theme-panel">
             <PanelHeader>
@@ -390,7 +410,7 @@ export default function FlashPage() {
                 </div>
               )}
               <ul className="divide-y divide-theme-border">
-                {history.map(entry => (
+                {history.filter(e => e.fileId).map(entry => (
                   <li 
                     key={entry.id} 
                     draggable
@@ -412,10 +432,42 @@ export default function FlashPage() {
                     <StatusPill status={entry.status} size="sm" className="shrink-0" />
                   </li>
                 ))}
-                {history.length === 0 && (
+                {history.filter(e => e.fileId).length === 0 && (
                   <div className="p-6 text-center text-sm text-theme-text-muted">No flash history.</div>
                 )}
               </ul>
+            </PanelContent>
+          </Panel>
+
+          {/* Live log — always visible */}
+          <Panel className="shrink-0 bg-theme-panel border border-theme-border shadow-sm">
+            <PanelHeader>
+              <div className="flex items-center gap-2">
+                <PanelTitle>Log</PanelTitle>
+                {(vcuState === "flashing" || vcuState === "bootloading") && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                )}
+              </div>
+            </PanelHeader>
+            <PanelContent className="p-0">
+              <div className="bg-black h-36 overflow-y-auto p-3 font-mono text-xs leading-relaxed rounded-b">
+                {liveLogs.length === 0 ? (
+                  <span className="text-gray-600">No active operation.</span>
+                ) : liveLogs.map((line, i) => {
+                  const isPowerCycle = /power.?cycle/i.test(line);
+                  const isError = /error|fail/i.test(line);
+                  const isSuccess = /success|complete|done/i.test(line);
+                  return (
+                    <div key={i} className={
+                      isPowerCycle ? "text-red-400 font-bold" :
+                      isError ? "text-red-400" :
+                      isSuccess ? "text-green-400" :
+                      "text-gray-400"
+                    }>{line}</div>
+                  );
+                })}
+                <div ref={logEndRef} />
+              </div>
             </PanelContent>
           </Panel>
         </div>
