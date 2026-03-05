@@ -96,6 +96,7 @@ def _next_history_id(conn: sqlite3.Connection) -> str:
 
 
 def _hex_file_row(row: sqlite3.Row) -> dict:
+    keys = row.keys()
     return {
         "id":            row["id"],
         "name":          row["name"],
@@ -105,6 +106,7 @@ def _hex_file_row(row: sqlite3.Row) -> dict:
         "lastFlashedAt": row["last_flashed_at"],
         "status":        row["status"],
         "notes":         row["notes"],
+        "lastFlashedBy": row["last_flashed_by"] if "last_flashed_by" in keys else None,
     }
 
 
@@ -161,9 +163,16 @@ def try_transition_vcu_state(expected: str, new: str) -> bool:
 
 def list_hex_files() -> list[dict]:
     with _connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM hex_files ORDER BY uploaded_at DESC"
-        ).fetchall()
+        rows = conn.execute("""
+            SELECT h.*,
+                   (SELECT fh.operator
+                    FROM flash_history fh
+                    WHERE fh.file_id = h.id
+                    ORDER BY fh.timestamp DESC
+                    LIMIT 1) AS last_flashed_by
+            FROM hex_files h
+            ORDER BY h.uploaded_at DESC
+        """).fetchall()
         return [_hex_file_row(r) for r in rows]
 
 
@@ -225,6 +234,25 @@ def update_hex_file_after_flash(file_id: str, status: str) -> None:
             "UPDATE hex_files SET last_flashed_at = ?, status = ? WHERE id = ?",
             (_now(), status, file_id),
         )
+
+
+def update_hex_file_notes(file_id: str, notes: str) -> dict | None:
+    trimmed = notes.strip() if notes else ""
+    final = trimmed if trimmed else None
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM hex_files WHERE id = ?", (file_id,)
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "UPDATE hex_files SET notes = ? WHERE id = ?", (final, file_id)
+        )
+        conn.commit()
+        updated = conn.execute(
+            "SELECT * FROM hex_files WHERE id = ?", (file_id,)
+        ).fetchone()
+        return _hex_file_row(updated)
 
 
 # ── Flash History ─────────────────────────────────────────────────────────────

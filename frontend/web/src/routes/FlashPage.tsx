@@ -1,18 +1,59 @@
-import { DragEvent, useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { DragEvent, useEffect, useReducer, useRef, useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useVcuApp } from "../hooks/useVcuApp";
-import { clearAllData } from "../services/api";
+import { clearAllData, getStoredHexFile } from "../services/api";
 import { Button } from "../components/ui/Button";
 import { Dropzone } from "../components/ui/Dropzone";
 import { StatusPill } from "../components/ui/StatusPill";
-import { DetailDrawer } from "../components/ui/DetailDrawer";
 import { NameModal } from "../components/ui/NameModal";
 import { FlashHistoryEntry } from "../types";
 import { Panel, PanelHeader, PanelTitle, PanelContent } from "../components/ui/Panel";
 import { InlineAlert } from "../components/ui/InlineAlert";
+import { LogModal } from "../components/flash/LogModal";
+import { FlashDrawer } from "../components/flash/FlashDrawer";
 
 const STORED_HEX_DRAG_TYPE = "application/x-sr-hex-id";
 const OPERATOR_KEY = "sr_operator_name";
+
+// Module-level persistence so tab switches don't reset the loaded file
+let _persistedFile: File | null = null;
+let _persistedDisplayName = "";
+let _persistedNotes = "";
+let _persistedStoredId: string | null = null;
+
+// ── File state reducer (replaces 4 useState calls) ──────────────────────────
+type FileState = { file: File | null; displayName: string; notes: string; storedFileId: string | null };
+type FileAction =
+  | { type: "LOAD"; file: File; displayName: string; notes: string; storedFileId: string | null }
+  | { type: "SET_NAME"; name: string }
+  | { type: "SET_NOTES"; notes: string }
+  | { type: "CLEAR" };
+function fileReducer(state: FileState, action: FileAction): FileState {
+  switch (action.type) {
+    case "LOAD":     return { file: action.file, displayName: action.displayName, notes: action.notes, storedFileId: action.storedFileId };
+    case "SET_NAME": return { ...state, displayName: action.name };
+    case "SET_NOTES":return { ...state, notes: action.notes };
+    case "CLEAR":    return { file: null, displayName: "", notes: "", storedFileId: null };
+  }
+}
+
+// ── Drag / UI state reducer (replaces 3 useState calls) ─────────────────────
+type DragState = { dragError: string; isDragReplace: boolean; replaceNotice: string };
+type DragAction =
+  | { type: "DRAG_OVER" }
+  | { type: "DRAG_LEAVE" }
+  | { type: "SET_ERROR"; error: string }
+  | { type: "REPLACED"; name: string }
+  | { type: "CLEAR_NOTICE" };
+function dragReducer(state: DragState, action: DragAction): DragState {
+  switch (action.type) {
+    case "DRAG_OVER":    return { ...state, isDragReplace: true };
+    case "DRAG_LEAVE":   return { ...state, isDragReplace: false };
+    case "SET_ERROR":    return { ...state, dragError: action.error };
+    case "REPLACED":     return { ...state, isDragReplace: false, replaceNotice: `Replaced with "${action.name}"` };
+    case "CLEAR_NOTICE": return { ...state, replaceNotice: "" };
+  }
+}
 
 export default function FlashPage() {
   const { 
@@ -30,148 +71,113 @@ export default function FlashPage() {
     handleSelectStoredHex,
   } = useVcuApp();
   
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [displayName, setDisplayName] = useState("");
-  const [notes, setNotes] = useState("");
+  const [fileState, dispatchFile] = useReducer(fileReducer, {
+    file: _persistedFile,
+    displayName: _persistedDisplayName,
+    notes: _persistedNotes,
+    storedFileId: _persistedStoredId,
+  });
+  const [dragState, dispatchDrag] = useReducer(dragReducer, {
+    dragError: "", isDragReplace: false, replaceNotice: "",
+  });
   const [operatorName, setOperatorName] = useState<string>(
     () => localStorage.getItem(OPERATOR_KEY) ?? ""
   );
-  const [drawerItem, setDrawerItem] = useState<FlashHistoryEntry | null>(null);
-  const [editingNotes, setEditingNotes] = useState("");
-  const [isSavingNotes, setIsSavingNotes] = useState(false);
-  const [notesError, setNotesError] = useState("");
-  const [dragError, setDragError] = useState("");
-  const [isDragReplace, setIsDragReplace] = useState(false);
-  const [replaceNotice, setReplaceNotice] = useState("");
   const [logOpen, setLogOpen] = useState(false);
-  const logEndRef = useRef<HTMLDivElement>(null);
-
-  // Close log modal on Escape
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => { if (e.key === "Escape") setLogOpen(false); };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, []);
-
-  // Auto-scroll live log to bottom whenever new lines arrive or modal opens
-  useEffect(() => {
-    if (logOpen) logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [liveLogs, logOpen]);
+  const [drawerItem, setDrawerItem] = useState<FlashHistoryEntry | null>(null);
+  const replaceNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const navigate = useNavigate();
+  const location = useLocation();
 
   // Auto-open log when an operation starts
   useEffect(() => {
-    if (vcuState === "bootloading" || vcuState === "flashing") {
-      setLogOpen(true);
-    }
+    if (vcuState === "bootloading" || vcuState === "flashing") setLogOpen(true);
   }, [vcuState]);
 
+  // Auto-load file navigated from Library page — single dispatch replaces 4 setStates
+  useEffect(() => {
+    const state = location.state as { hexFileId?: string; displayName?: string; notes?: string } | null;
+    if (!state?.hexFileId) return;
+    window.history.replaceState({}, "");
+    getStoredHexFile(state.hexFileId).then((file) => {
+      const dn = state.displayName || file.name;
+      const n  = state.notes || "";
+      _persistedFile = file; _persistedDisplayName = dn; _persistedNotes = n; _persistedStoredId = state.hexFileId!;
+      dispatchFile({ type: "LOAD", file, displayName: dn, notes: n, storedFileId: state.hexFileId! });
+    }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const clearFile = () => {
-    setSelectedFile(null);
-    setDisplayName("");
-    setNotes("");
-    setReplaceNotice("");
+    _persistedFile = null; _persistedDisplayName = ""; _persistedNotes = ""; _persistedStoredId = null;
+    dispatchFile({ type: "CLEAR" });
+    dispatchDrag({ type: "CLEAR_NOTICE" });
   };
 
-  const replaceFile = (file: File) => {
-    setSelectedFile(file);
-    setDisplayName(file.name);
-    setNotes("");
-    setReplaceNotice(`Replaced with "${file.name}"`);
-    setTimeout(() => setReplaceNotice(""), 3000);
+  const replaceFile = (file: File, id: string | null = null) => {
+    _persistedFile = file; _persistedDisplayName = file.name; _persistedNotes = ""; _persistedStoredId = id;
+    dispatchFile({ type: "LOAD", file, displayName: file.name, notes: "", storedFileId: id });
+    dispatchDrag({ type: "REPLACED", name: file.name });
+    if (replaceNoticeTimer.current) clearTimeout(replaceNoticeTimer.current);
+    replaceNoticeTimer.current = setTimeout(() => dispatchDrag({ type: "CLEAR_NOTICE" }), 3000);
   };
-
-  const isEnteringBootloader = vcuState === "bootloading";
-  const isBootloaded = vcuState === "bootloaded";
-  const vcuIsBusy = vcuState === "flashing";
-  const canFlash = selectedFile && !isBusy && !vcuIsBusy;
 
   const onAction = async (actionFn: (fd: FormData) => Promise<void>) => {
-    if (!selectedFile) return;
+    if (!fileState.file) return;
     const formData = new FormData();
-    formData.append("file", selectedFile);
-    formData.append("displayName", displayName || selectedFile.name);
-    formData.append("notes", notes);
+    formData.append("file", fileState.file);
+    formData.append("displayName", fileState.displayName || fileState.file.name);
+    formData.append("notes", fileState.notes);
     formData.append("operator", operatorName);
     await actionFn(formData);
     clearFile();
   };
 
-  useEffect(() => {
-    setEditingNotes(drawerItem?.notes ?? "");
-    setNotesError("");
-  }, [drawerItem]);
-
-  const handleSaveNotes = async () => {
-    if (!drawerItem) return;
-
-    setIsSavingNotes(true);
-    setNotesError("");
-
-    try {
-      await handleUpdateHistoryNotes(drawerItem.id, editingNotes);
-      setDrawerItem({
-        ...drawerItem,
-        notes: editingNotes.trim() ? editingNotes.trim() : undefined,
-      });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Failed to save notes.";
-      setNotesError(message);
-    } finally {
-      setIsSavingNotes(false);
-    }
-  };
-
-  const notesChanged = (editingNotes.trim() !== (drawerItem?.notes ?? "").trim());
-
   const onStoredFileDrop = async (fileId: string) => {
     try {
-      const file = await handleSelectStoredHex(fileId);
-      if (selectedFile) {
-        replaceFile(file);
+      const droppedFile = await handleSelectStoredHex(fileId);
+      if (fileState.file) {
+        replaceFile(droppedFile, fileId);
       } else {
-        setSelectedFile(file);
-        setDisplayName(file.name);
-        setNotes("");
+        _persistedFile = droppedFile; _persistedDisplayName = droppedFile.name; _persistedNotes = ""; _persistedStoredId = fileId;
+        dispatchFile({ type: "LOAD", file: droppedFile, displayName: droppedFile.name, notes: "", storedFileId: fileId });
       }
-      setDragError("");
+      dispatchDrag({ type: "SET_ERROR", error: "" });
     } catch {
-      setDragError("This flash record has no stored HEX payload to drag.");
+      dispatchDrag({ type: "SET_ERROR", error: "This flash record has no stored HEX payload to drag." });
     }
   };
 
   const handlePanelDragOver = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
-    setIsDragReplace(true);
+    dispatchDrag({ type: "DRAG_OVER" });
   };
 
   const handlePanelDragLeave = (event: DragEvent<HTMLDivElement>) => {
-    if (!event.currentTarget.contains(event.relatedTarget as Node)) {
-      setIsDragReplace(false);
-    }
+    if (!event.currentTarget.contains(event.relatedTarget as Node)) dispatchDrag({ type: "DRAG_LEAVE" });
   };
 
   const handlePanelDrop = async (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
-    setIsDragReplace(false);
-
+    dispatchDrag({ type: "DRAG_LEAVE" });
     const storedId = event.dataTransfer.getData(STORED_HEX_DRAG_TYPE);
-    if (storedId) {
-      await onStoredFileDrop(storedId);
-      return;
-    }
-
-    const file = event.dataTransfer.files?.[0];
-    if (file) {
-      replaceFile(file);
-    }
+    if (storedId) { await onStoredFileDrop(storedId); return; }
+    const droppedFile = event.dataTransfer.files?.[0];
+    if (droppedFile) replaceFile(droppedFile);
   };
 
   const startHistoryDrag = (event: DragEvent<HTMLLIElement>, entry: FlashHistoryEntry) => {
-    const fileId = entry.fileId ?? "";
-    event.dataTransfer.setData(STORED_HEX_DRAG_TYPE, fileId);
+    event.dataTransfer.setData(STORED_HEX_DRAG_TYPE, entry.fileId ?? "");
     event.dataTransfer.effectAllowed = "copy";
   };
+
+  const isEnteringBootloader = vcuState === "bootloading";
+  const isBootloaded           = vcuState === "bootloaded";
+  const vcuIsBusy              = vcuState === "flashing";
+  const { file, displayName, notes, storedFileId } = fileState;
+  const { dragError, isDragReplace, replaceNotice } = dragState;
+  const canFlash = !!file && !isBusy && !vcuIsBusy;
 
   return (
     <div className="min-h-screen bg-theme-bg text-theme-text font-sans flex flex-col p-4 gap-4 h-screen overflow-hidden">
@@ -206,8 +212,30 @@ export default function FlashPage() {
       
       {/* Header Row */}
       <header className="flex justify-between items-center shrink-0">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           <img src="/branding/spartan-logo.png" alt="Spartan Racing" className="h-10 w-auto object-contain" />
+          <nav className="flex items-center gap-1 border border-theme-border bg-theme-panel rounded-full p-1">
+            <button
+              onClick={() => navigate("/")}
+              className={`px-4 py-1 text-xs font-bold tracking-wide rounded-full transition-colors ${
+                location.pathname === "/"
+                  ? "bg-theme-text text-theme-bg"
+                  : "text-theme-text-muted hover:text-theme-text"
+              }`}
+            >
+              FLASH
+            </button>
+            <button
+              onClick={() => navigate("/library")}
+              className={`px-4 py-1 text-xs font-bold tracking-wide rounded-full transition-colors ${
+                location.pathname === "/library"
+                  ? "bg-theme-text text-theme-bg"
+                  : "text-theme-text-muted hover:text-theme-text"
+              }`}
+            >
+              LIBRARY
+            </button>
+          </nav>
         </div>
         <div className="flex items-center gap-3">
           {operatorName && (
@@ -248,6 +276,8 @@ export default function FlashPage() {
             onClick={async () => {
               if (!window.confirm("Clear all stored files and flash history? This cannot be undone.")) return;
               await clearAllData();
+              localStorage.removeItem("sr_flash_logs");
+              localStorage.removeItem("sr_flash_history");
               clearFile();
               window.location.reload();
             }}
@@ -265,14 +295,13 @@ export default function FlashPage() {
           <Panel className="flex-1 min-h-0 bg-theme-panel border border-theme-border shadow-sm flex flex-col">
             {/* File / dropzone area */}
             <div className="flex-1 min-h-0 overflow-y-auto p-6">
-              {!selectedFile ? (
+              {!file ? (
                 <div className="h-full flex items-center justify-center">
-                  <Dropzone 
-                    onFileSelect={(f) => { 
-                      setSelectedFile(f); 
-                      setDisplayName(f.name); 
-                      setNotes(""); 
-                    }} 
+                  <Dropzone
+                    onFileSelect={(f) => {
+                      _persistedFile = f; _persistedDisplayName = f.name; _persistedNotes = ""; _persistedStoredId = null;
+                      dispatchFile({ type: "LOAD", file: f, displayName: f.name, notes: "", storedFileId: null });
+                    }}
                     onStoredFileDrop={onStoredFileDrop}
                     className="w-full h-full"
                   />
@@ -309,15 +338,18 @@ export default function FlashPage() {
                     </svg>
                   </div>
                   
-                  <input 
-                    type="text" 
-                    value={displayName} 
-                    onChange={(e) => setDisplayName(e.target.value)} 
-                    className="w-full bg-transparent text-xl font-bold text-theme-text text-center focus:outline-none focus:ring-2 focus:ring-theme-primary rounded px-2 py-1 border-b border-transparent hover:border-theme-border transition-colors mb-2" 
-                    placeholder="Filename" 
+                  <input
+                    type="text"
+                    value={displayName}
+                    onChange={(e) => { _persistedDisplayName = e.target.value; dispatchFile({ type: "SET_NAME", name: e.target.value }); }}
+                    className="w-full bg-transparent text-xl font-bold text-theme-text text-center focus:outline-none focus:ring-2 focus:ring-theme-primary rounded px-2 py-1 border-b border-transparent hover:border-theme-border transition-colors mb-2"
+                    placeholder="Filename"
                   />
+                  {storedFileId && (
+                    <div className="text-xs font-mono text-theme-text-muted mb-1">{storedFileId}</div>
+                  )}
                   <div className="text-sm text-theme-text-muted mb-8">
-                    {(selectedFile.size / 1024).toFixed(2)} KB • {new Date(selectedFile.lastModified).toLocaleDateString()}
+                    {(file.size / 1024).toFixed(2)} KB • {new Date(file.lastModified).toLocaleDateString()}
                   </div>
 
                   {replaceNotice && (
@@ -328,10 +360,10 @@ export default function FlashPage() {
 
                   <div className="w-full space-y-2">
                     <label htmlFor="file-notes" className="text-xs font-bold text-theme-text-muted">Notes (Optional)</label>
-                    <textarea 
+                    <textarea
                       id="file-notes"
                       value={notes}
-                      onChange={(e) => setNotes(e.target.value)}
+                      onChange={(e) => { _persistedNotes = e.target.value; dispatchFile({ type: "SET_NOTES", notes: e.target.value }); }}
                       className="w-full bg-theme-bg border border-theme-border text-theme-text px-4 py-3 rounded focus:outline-none focus:ring-2 focus:ring-theme-primary min-h-[120px] resize-none text-sm"
                       placeholder="Add build notes or version info..."
                     />
@@ -353,7 +385,7 @@ export default function FlashPage() {
                   className="w-full py-4 font-semibold text-sm tracking-wide" 
                   onClick={handleBoot} 
                   disabled={isBusy || isEnteringBootloader || isBootloaded || vcuIsBusy}
-                  isLoading={isBusy && vcuState === "bootloading" && !selectedFile}
+                  isLoading={isBusy && vcuState === "bootloading" && !file}
                 >
                   BOOTLOAD
                 </Button>
@@ -431,148 +463,20 @@ export default function FlashPage() {
 
         </div>
 
-      {/* Log modal */}
-      {logOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-theme-overlay backdrop-blur-sm"
-          onClick={() => setLogOpen(false)}
-        >
-          <div
-            className="w-full max-w-3xl mx-4 rounded-xl bg-theme-panel border border-theme-border shadow-2xl overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-theme-border">
-              <div className="flex items-center gap-2.5">
-                <span className="text-sm font-semibold text-theme-text">Operation Log</span>
-                {(vcuState === "flashing" || vcuState === "bootloading") && (
-                  <span className="flex items-center gap-1.5 text-[10px] font-semibold tracking-widest uppercase text-green-400">
-                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                    LIVE
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-3">
-                {liveLogs.length > 0 && (
-                  <span className="text-xs text-theme-text-muted font-mono">{liveLogs.length} lines</span>
-                )}
-                <button
-                  onClick={() => setLogOpen(false)}
-                  className="p-1.5 text-theme-text-muted hover:text-theme-text hover:bg-theme-panel-hover rounded-full transition-colors"
-                  aria-label="Close"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-            </div>
-
-            {/* Log body */}
-            <div className="h-96 overflow-y-auto p-4 font-mono text-xs leading-relaxed bg-theme-bg">
-              {liveLogs.length === 0 ? (
-                <div className="h-full flex items-center justify-center">
-                  <span className="text-theme-text-muted text-xs">No active operation.</span>
-                </div>
-              ) : liveLogs.map((line, i) => {
-                const match = line.match(/^\[([^\]]+)\]\s*(.*)$/);
-                const rawTs = match ? match[1] : null;
-                const msg = match ? match[2] : line;
-                let ts: string | null = null;
-                if (rawTs) {
-                  const d = new Date(rawTs);
-                  ts = isNaN(d.getTime()) ? rawTs : d.toLocaleTimeString("en-US", {
-                    timeZone: "America/Los_Angeles",
-                    hour: "numeric",
-                    minute: "2-digit",
-                    second: "2-digit",
-                    hour12: true,
-                  }) + " PST";
-                }
-                const isPowerCycle = /power.?cycle/i.test(line);
-                const isError = /error|fail/i.test(msg);
-                const isSeparator = line.startsWith("────");
-                const isSuccess = /success|complete|done|acknowledged/i.test(msg);
-                const isInfo = /starting|uploading|entering|running|vcu/i.test(msg);
-
-                if (isSeparator) {
-                  return <div key={i} className="text-theme-border my-2 select-none">{line}</div>;
-                }
-
-                return (
-                  <div key={i} className="flex gap-2 py-[1px]">
-                    {ts && <span className="shrink-0 text-theme-text-muted opacity-40">{ts}</span>}
-                    <span className={
-                      isPowerCycle ? "text-red-400 font-bold" :
-                      isError ? "text-red-400" :
-                      isSuccess ? "text-green-400" :
-                      isInfo ? "text-sky-400" :
-                      "text-theme-text"
-                    }>{msg || line}</span>
-                  </div>
-                );
-              })}
-              <div ref={logEndRef} />
-            </div>
-          </div>
-        </div>
-      )}
       </div>
 
-      <DetailDrawer isOpen={!!drawerItem} onClose={() => setDrawerItem(null)} title="Flash Details">
-        {drawerItem && (
-          <div className="space-y-6">
-            <div className="space-y-1">
-              <h2 className="text-lg font-bold text-theme-text">{drawerItem.name}</h2>
-              <div className="text-sm text-theme-text-muted">{new Date(drawerItem.timestamp).toLocaleString()}</div>
-              {drawerItem.operator && (
-                <div className="text-sm text-theme-text-muted">Flashed by <span className="font-semibold text-theme-text">{drawerItem.operator}</span></div>
-              )}
-            </div>
-            
-            <div className="bg-theme-bg rounded p-4 border border-theme-border">
-              <div className="text-xs font-bold text-theme-text-muted mb-2">Status</div>
-              <StatusPill status={drawerItem.status} />
-            </div>
+      <LogModal
+        isOpen={logOpen}
+        onClose={() => setLogOpen(false)}
+        logs={liveLogs}
+        vcuState={vcuState}
+      />
 
-            <div className="space-y-2">
-              <div className="text-xs font-bold text-theme-text-muted">Notes</div>
-              <textarea
-                value={editingNotes}
-                onChange={(event) => setEditingNotes(event.target.value)}
-                disabled={isSavingNotes}
-                className="w-full bg-theme-bg border border-theme-border text-theme-text px-4 py-3 rounded focus:outline-none focus:ring-2 focus:ring-theme-primary min-h-[140px] resize-none text-sm"
-                placeholder="Add notes for this flash record..."
-              />
-
-              {notesError && (
-                <InlineAlert variant="error" message={notesError} />
-              )}
-
-              <div className="flex justify-end pt-1">
-                <Button
-                  variant="primary"
-                  className="text-xs"
-                  onClick={handleSaveNotes}
-                  disabled={isSavingNotes || !notesChanged}
-                  isLoading={isSavingNotes}
-                >
-                  Save Notes
-                </Button>
-              </div>
-            </div>
-
-            {drawerItem.logs && drawerItem.logs.length > 0 && (
-              <div className="space-y-2">
-                <div className="text-xs font-bold text-theme-text-muted">Flash Log</div>
-                <div className="bg-theme-bg border border-theme-border rounded p-3 max-h-48 overflow-y-auto">
-                  {drawerItem.logs.map((line, i) => (
-                    <div key={`${i}-${line.slice(0, 32)}`} className="text-xs font-mono text-theme-text-muted leading-relaxed whitespace-pre-wrap">{line}</div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </DetailDrawer>
+      <FlashDrawer
+        item={drawerItem}
+        onClose={() => setDrawerItem(null)}
+        onSaveNotes={handleUpdateHistoryNotes}
+      />
     </div>
   );
 }

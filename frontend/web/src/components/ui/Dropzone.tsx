@@ -82,12 +82,20 @@ export function Dropzone({ onFileSelect, onStoredFileDrop, accept = ".hex", clas
       <div className="flex flex-col items-center justify-center gap-3 pointer-events-none">
         <UploadCloud className="w-10 h-10 text-gray-400 dark:text-zinc-500" />
         <div>
-          <p className="text-sm font-medium text-gray-900 dark:text-zinc-200">
-            Click to upload or drag and drop
-          </p>
-          <p className="text-xs text-gray-500 dark:text-zinc-400 mt-1">
-            HEX files only
-          </p>
+          {dragActive ? (
+            <p className="text-sm font-medium text-gray-900 dark:text-zinc-200">
+              Drop to load
+            </p>
+          ) : (
+            <>
+              <p className="text-sm font-medium text-gray-900 dark:text-zinc-200">
+                Click to upload or drag and drop
+              </p>
+              <p className="text-xs text-gray-500 dark:text-zinc-400 mt-1">
+                HEX files only
+              </p>
+            </>
+          )}
         </div>
       </div>
     </div>

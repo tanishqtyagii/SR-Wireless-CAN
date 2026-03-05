@@ -380,6 +380,16 @@ def get_hex_content(file_id: str):
     return send_file(path, as_attachment=True, download_name=filename)
 
 
+@app.patch("/api/hex-files/<file_id>/notes")
+def update_hex_file_notes(file_id: str):
+    body = request.get_json(silent=True) or {}
+    notes = body.get("notes", "")
+    updated = db.update_hex_file_notes(file_id, notes)
+    if not updated:
+        return jsonify({"error": "File not found"}), 404
+    return jsonify(updated)
+
+
 # ── Flash History ─────────────────────────────────────────────────────────────
 
 @app.get("/api/flash-history")

@@ -36,8 +36,9 @@ export function NameModal({ onConfirm }: NameModalProps) {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-semibold text-theme-text-muted tracking-wide uppercase">Your name</label>
+            <label htmlFor="operator-name" className="text-xs font-semibold text-theme-text-muted tracking-wide uppercase">Your name</label>
             <input
+              id="operator-name"
               ref={inputRef}
               type="text"
               value={value}

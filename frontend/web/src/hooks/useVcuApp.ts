@@ -14,21 +14,69 @@ import {
 import { subscribeToBroadcast } from "../services/ws";
 import { FlashHistoryEntry } from "../types";
 
+// Module-level cache so history survives tab switches without a visible reload
+const HISTORY_STORAGE_KEY = "sr_flash_history";
+function loadPersistedHistory(): FlashHistoryEntry[] {
+  try { return JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) ?? "[]"); } catch { return []; }
+}
+function savePersistedHistory(items: FlashHistoryEntry[]): void {
+  try { localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(items)); } catch { /* storage full */ }
+}
+let _cachedHistory: FlashHistoryEntry[] = loadPersistedHistory();
+
+// Log persistence: load from localStorage on startup, survive hard refreshes
+const LOGS_STORAGE_KEY = "sr_flash_logs";
+const LOGS_MAX_LINES = 4000;
+function loadPersistedLogs(): string[] {
+  try { return JSON.parse(localStorage.getItem(LOGS_STORAGE_KEY) ?? "[]"); } catch { return []; }
+}
+function savePersistedLogs(lines: string[]): void {
+  const capped = lines.length > LOGS_MAX_LINES ? lines.slice(lines.length - LOGS_MAX_LINES) : lines;
+  _persistedLogs = capped;
+  try { localStorage.setItem(LOGS_STORAGE_KEY, JSON.stringify(capped)); } catch { /* storage full */ }
+}
+let _persistedLogs: string[] = loadPersistedLogs();
+let _bootstrapped = false;
+// Track which operation IDs are already in the buffer
+let _loggedIds = new Set<string>(
+  (_persistedLogs.join("\n").match(/Operation (fh_\w+)/g) ?? []).map(s => s.replace("Operation ", ""))
+);
+
+/** Fetch logs for ALL history entries and rebuild a fully sorted chronological buffer */
+async function bootstrapHistoricalLogs(entries: FlashHistoryEntry[]): Promise<string[]> {
+  // Sort oldest-first
+  const sorted = [...entries].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  const lines: string[] = [];
+  for (const entry of sorted) {
+    try {
+      const data = await fetchFlashLogs(entry.id);
+      const ts = new Date(entry.timestamp).toLocaleTimeString("en-US", {
+        timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true,
+      });
+      lines.push("", `── Operation ${entry.id}  ${ts} PST ──────────────────────`);
+      lines.push(...(data.logs ?? []));
+    } catch { /* skip if fetch fails */ }
+  }
+  return lines;
+}
+
 export function useVcuApp() {
   const { setVcuState, vcuState, setPowerCycleNeeded, powerCycleNeeded } = useVcuStore();
   
-  const [history, setHistory] = useState<FlashHistoryEntry[]>([]);
+  const [history, setHistory] = useState<FlashHistoryEntry[]>(_cachedHistory);
   
   const [isBusy, setIsBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [backendDown, setBackendDown] = useState(false);
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
-  const [liveLogs, setLiveLogs] = useState<string[]>([]);
+  const [liveLogs, setLiveLogs] = useState<string[]>(_persistedLogs);
   const livePollRef = useRef<number | null>(null);
   // Accumulated logs that persist across all operations for the lifetime of the page
-  const accumulatedLogsRef = useRef<string[]>([]);
+  const accumulatedLogsRef = useRef<string[]>(_persistedLogs);
   // How many lines from the current operation we've already appended
   const lastOpLogCountRef = useRef<number>(0);
+  // Ref so refreshData can check if a live poll is running without a stale closure
+  const activeHistoryIdRef = useRef<string | null>(null);
 
   const refreshData = useCallback(async () => {
     try {
@@ -38,11 +86,31 @@ export function useVcuApp() {
       ]);
 
       setBackendDown(false);
-      setHistory(Array.isArray(historyItems) ? historyItems : []);
+      const items = Array.isArray(historyItems) ? historyItems : [];
+      _cachedHistory = items;
+      savePersistedHistory(items);
+      setHistory(items);
       if (statePayload?.state) {
         setVcuState(statePayload.state);
       }
       setPowerCycleNeeded(statePayload?.powerCycle ?? false);
+
+      // Bootstrap once on page load, or whenever a new operation appears that isn't logged yet
+      const hasNew = items.some(e => !_loggedIds.has(e.id));
+      if (!_bootstrapped || hasNew) {
+        _bootstrapped = true;
+        bootstrapHistoricalLogs(items).then((lines) => {
+          if (lines.length > 0) {
+            _loggedIds = new Set(items.map(e => e.id));
+            savePersistedLogs(lines);
+            // Update accumulatedLogsRef and React state — but only when not mid-operation
+            if (!activeHistoryIdRef.current) {
+              accumulatedLogsRef.current = lines;
+              setLiveLogs([...lines]);
+            }
+          }
+        }).catch(() => {});
+      }
     } catch (err: unknown) {
       // TypeError = raw network failure; HTTP 5xx = Vite proxy couldn't reach backend
       const isNetworkError = err instanceof TypeError;
@@ -64,6 +132,7 @@ export function useVcuApp() {
 
   // Fast log polling while an operation is running
   useEffect(() => {
+    activeHistoryIdRef.current = activeHistoryId;
     if (livePollRef.current !== null) {
       window.clearInterval(livePollRef.current);
       livePollRef.current = null;
@@ -84,6 +153,7 @@ export function useVcuApp() {
       `── Operation ${activeHistoryId}  ${ts} PST ──────────────────────`,
     ];
     lastOpLogCountRef.current = 0;
+    savePersistedLogs(accumulatedLogsRef.current);
     setLiveLogs([...accumulatedLogsRef.current]);
 
     livePollRef.current = window.setInterval(async () => {
@@ -94,6 +164,7 @@ export function useVcuApp() {
         if (newLines.length > 0) {
           accumulatedLogsRef.current = [...accumulatedLogsRef.current, ...newLines];
           lastOpLogCountRef.current = allLines.length;
+          savePersistedLogs(accumulatedLogsRef.current);
           setLiveLogs([...accumulatedLogsRef.current]);
         }
         // Once terminal status arrives, do one final refresh then stop
@@ -142,6 +213,7 @@ export function useVcuApp() {
       // Capture historyId if the action returned one
       const historyId = (result as { historyId?: string } | null)?.historyId;
       if (historyId) {
+        activeHistoryIdRef.current = historyId;
         setActiveHistoryId(historyId);
       }
       await refreshData();

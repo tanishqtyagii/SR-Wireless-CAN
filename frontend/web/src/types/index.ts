@@ -1,6 +1,18 @@
 export type VcuState = "idle" | "bootloading" | "bootloaded" | "flashing" | "error";
 export type FlashStatus = "success" | "failed" | "unknown" | "pending";
 
+export interface HexFile {
+  id: string;
+  name: string;
+  displayName?: string;
+  size: number;
+  uploadedAt: string;
+  lastFlashedAt?: string;
+  lastFlashedBy?: string;
+  status: "pending" | "success" | "failed";
+  notes?: string;
+}
+
 export interface FlashHistoryEntry {
   id: string;
   fileId?: string;
@@ -10,10 +22,4 @@ export interface FlashHistoryEntry {
   notes?: string;
   operator?: string;
   logs?: string[];
-}
-
-export interface SystemEvent {
-  type: "vcu_state" | "socket_error" | "flash_history_updated";
-  state?: VcuState;
-  error?: string;
 }
