@@ -1,5 +1,4 @@
 import { useEffect, useRef } from "react";
-import { X } from "lucide-react";
 
 interface LogModalProps {
   isOpen: boolean;
@@ -66,7 +65,9 @@ export function LogModal({ isOpen, onClose, logs, vcuState }: LogModalProps) {
               className="p-1.5 text-theme-text-muted hover:text-theme-text hover:bg-theme-panel-hover rounded-full transition-colors"
               aria-label="Close"
             >
-              <X size={16} />
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+              </svg>
             </button>
           </div>
         </div>
@@ -77,7 +78,7 @@ export function LogModal({ isOpen, onClose, logs, vcuState }: LogModalProps) {
             <div className="h-full flex items-center justify-center">
               <span className="text-theme-text-muted text-xs">No logs yet.</span>
             </div>
-          ) : logs.map((line) => {
+          ) : logs.map((line, index) => {
             const match = line.match(/^\[([^\]]+)\]\s*(.*)$/);
             const rawTs = match ? match[1] : null;
             const msg = match ? match[2] : line;
@@ -100,13 +101,13 @@ export function LogModal({ isOpen, onClose, logs, vcuState }: LogModalProps) {
 
             if (isSeparator) {
               return (
-                <div key={`sep-${line.trim()}`} className="text-theme-border my-2 select-none">
+                <div key={`sep-${index}`} className="text-theme-border my-2 select-none">
                   {line}
                 </div>
               );
             }
             return (
-              <div key={`log-${line.slice(0, 40)}`} className="flex gap-2 py-[1px]">
+              <div key={`log-${index}`} className="flex gap-2 py-[1px]">
                 {ts && <span className="shrink-0 text-theme-text-muted opacity-40">{ts}</span>}
                 <span className={
                   isPowerCycle ? "text-red-400 font-bold" :

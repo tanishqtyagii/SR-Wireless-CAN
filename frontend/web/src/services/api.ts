@@ -12,8 +12,20 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export const fetchFlashHistory = (): Promise<FlashHistoryEntry[]> =>
-  apiFetch("/flash-history");
+interface FetchFlashHistoryOptions {
+  fileId?: string;
+  includeLogs?: boolean;
+  limit?: number;
+}
+
+export const fetchFlashHistory = (options: FetchFlashHistoryOptions = {}): Promise<FlashHistoryEntry[]> => {
+  const params = new URLSearchParams();
+  if (options.fileId) params.set("fileId", options.fileId);
+  if (options.includeLogs) params.set("includeLogs", "1");
+  if (options.limit) params.set("limit", String(options.limit));
+  const query = params.toString();
+  return apiFetch(`/flash-history${query ? `?${query}` : ""}`);
+};
 
 export const fetchVcuState = (): Promise<{ state: VcuState; powerCycle?: boolean }> =>
   apiFetch("/vcu-state");

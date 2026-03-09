@@ -394,7 +394,10 @@ def update_hex_file_notes(file_id: str):
 
 @app.get("/api/flash-history")
 def list_flash_history():
-    return jsonify(db.list_flash_history())
+    include_logs = request.args.get("includeLogs", "0").strip().lower() in {"1", "true", "yes"}
+    file_id = (request.args.get("fileId") or "").strip() or None
+    limit = request.args.get("limit", type=int) or 250
+    return jsonify(db.list_flash_history(limit=limit, file_id=file_id, include_logs=include_logs))
 
 
 @app.get("/api/flash-history/<entry_id>/logs")

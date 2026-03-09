@@ -110,9 +110,9 @@ def _hex_file_row(row: sqlite3.Row) -> dict:
     }
 
 
-def _history_row(row: sqlite3.Row) -> dict:
+def _history_row(row: sqlite3.Row, *, include_logs: bool = True) -> dict:
     logs = None
-    if row["logs"]:
+    if include_logs and row["logs"]:
         try:
             logs = json.loads(row["logs"])
         except Exception:
@@ -257,13 +257,24 @@ def update_hex_file_notes(file_id: str, notes: str) -> dict | None:
 
 # ── Flash History ─────────────────────────────────────────────────────────────
 
-def list_flash_history(limit: int = 250) -> list[dict]:
+def list_flash_history(
+    limit: int = 250,
+    *,
+    file_id: str | None = None,
+    include_logs: bool = False,
+) -> list[dict]:
     with _connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM flash_history ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return [_history_row(r) for r in rows]
+        if file_id:
+            rows = conn.execute(
+                "SELECT * FROM flash_history WHERE file_id = ? ORDER BY timestamp DESC LIMIT ?",
+                (file_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM flash_history ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [_history_row(r, include_logs=include_logs) for r in rows]
 
 
 def add_flash_history(

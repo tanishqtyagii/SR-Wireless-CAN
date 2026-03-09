@@ -1,5 +1,4 @@
 import React, { useCallback, useRef } from "react";
-import { UploadCloud } from "lucide-react";
 
 const STORED_HEX_DRAG_TYPE = "application/x-sr-hex-id";
 
@@ -80,7 +79,10 @@ export function Dropzone({ onFileSelect, onStoredFileDrop, accept = ".hex", clas
         aria-label="Upload HEX file"
       />
       <div className="flex flex-col items-center justify-center gap-3 pointer-events-none">
-        <UploadCloud className="w-10 h-10 text-gray-400 dark:text-zinc-500" />
+        <svg className="w-10 h-10 text-gray-400 dark:text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V6.75m0 0L8.25 10.5M12 6.75l3.75 3.75" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 15.75v1.5A2.25 2.25 0 006 19.5h12a2.25 2.25 0 002.25-2.25v-1.5" />
+        </svg>
         <div>
           {dragActive ? (
             <p className="text-sm font-medium text-gray-900 dark:text-zinc-200">

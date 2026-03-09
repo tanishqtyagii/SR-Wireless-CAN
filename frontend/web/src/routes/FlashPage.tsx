@@ -1,7 +1,7 @@
-import { DragEvent, useEffect, useReducer, useRef, useState } from "react";
+import { DragEvent, Suspense, lazy, useEffect, useReducer, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useVcuApp } from "../hooks/useVcuApp";
-import { clearAllData, getStoredHexFile } from "../services/api";
+import { clearAllData, fetchFlashLogs, getStoredHexFile } from "../services/api";
 import { Button } from "../components/ui/Button";
 import { Dropzone } from "../components/ui/Dropzone";
 import { StatusPill } from "../components/ui/StatusPill";
@@ -9,8 +9,13 @@ import { NameModal } from "../components/ui/NameModal";
 import { FlashHistoryEntry } from "../types";
 import { Panel, PanelHeader, PanelTitle, PanelContent } from "../components/ui/Panel";
 import { InlineAlert } from "../components/ui/InlineAlert";
-import { LogModal } from "../components/flash/LogModal";
-import { FlashDrawer } from "../components/flash/FlashDrawer";
+
+const LogModal = lazy(() =>
+  import("../components/flash/LogModal").then((module) => ({ default: module.LogModal }))
+);
+const FlashDrawer = lazy(() =>
+  import("../components/flash/FlashDrawer").then((module) => ({ default: module.FlashDrawer }))
+);
 
 const STORED_HEX_DRAG_TYPE = "application/x-sr-hex-id";
 const OPERATOR_KEY = "sr_operator_name";
@@ -55,6 +60,19 @@ function dragReducer(state: DragState, action: DragAction): DragState {
   }
 }
 
+function formatRecentFlashTimestamp(timestamp: string): string {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const sameYear = date.getFullYear() === now.getFullYear();
+  const datePart = date.toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+  const timePart = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `${datePart} ${timePart}`;
+}
+
 export default function FlashPage() {
   const { 
     vcuState, 
@@ -85,6 +103,7 @@ export default function FlashPage() {
   );
   const [logOpen, setLogOpen] = useState(false);
   const [drawerItem, setDrawerItem] = useState<FlashHistoryEntry | null>(null);
+  const [drawerLogs, setDrawerLogs] = useState<string[] | undefined>(undefined);
   const replaceNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
@@ -93,6 +112,26 @@ export default function FlashPage() {
   useEffect(() => {
     if (vcuState === "bootloading" || vcuState === "flashing") setLogOpen(true);
   }, [vcuState]);
+
+  useEffect(() => {
+    if (!drawerItem) {
+      setDrawerLogs(undefined);
+      return;
+    }
+
+    let cancelled = false;
+    fetchFlashLogs(drawerItem.id)
+      .then((data) => {
+        if (!cancelled) setDrawerLogs(data.logs ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setDrawerLogs([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [drawerItem]);
 
   // Auto-load file navigated from Library page — single dispatch replaces 4 setStates
   useEffect(() => {
@@ -441,14 +480,22 @@ export default function FlashPage() {
                     title="Drag into upload area"
                     role="button"
                     tabIndex={0}
-                    onClick={() => setDrawerItem(entry)}
-                    onKeyDown={(e) => e.key === 'Enter' && setDrawerItem(entry)}
+                    onClick={() => {
+                      setDrawerLogs(undefined);
+                      setDrawerItem(entry);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        setDrawerLogs(undefined);
+                        setDrawerItem(entry);
+                      }
+                    }}
                   >
                     <div className="min-w-0 pr-2">
                       <div className="text-sm font-semibold text-theme-text truncate">{entry.name}</div>
                       <div className="text-xs text-theme-text-muted mt-0.5">
                         {entry.operator && <span className="mr-1.5">{entry.operator} &middot;</span>}
-                        {new Date(entry.timestamp).toLocaleTimeString()}
+                        {formatRecentFlashTimestamp(entry.timestamp)}
                       </div>
                     </div>
                     <StatusPill status={entry.status} size="sm" className="shrink-0" />
@@ -465,18 +512,22 @@ export default function FlashPage() {
 
       </div>
 
-      <LogModal
-        isOpen={logOpen}
-        onClose={() => setLogOpen(false)}
-        logs={liveLogs}
-        vcuState={vcuState}
-      />
-
-      <FlashDrawer
-        item={drawerItem}
-        onClose={() => setDrawerItem(null)}
-        onSaveNotes={handleUpdateHistoryNotes}
-      />
+      <Suspense fallback={null}>
+        <LogModal
+          isOpen={logOpen}
+          onClose={() => setLogOpen(false)}
+          logs={liveLogs}
+          vcuState={vcuState}
+        />
+        <FlashDrawer
+          item={drawerItem ? { ...drawerItem, logs: drawerLogs } : null}
+          onClose={() => {
+            setDrawerLogs(undefined);
+            setDrawerItem(null);
+          }}
+          onSaveNotes={handleUpdateHistoryNotes}
+        />
+      </Suspense>
     </div>
   );
 }

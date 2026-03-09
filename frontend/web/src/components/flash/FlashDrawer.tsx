@@ -86,13 +86,20 @@ export function FlashDrawer({ item, onClose, onSaveNotes }: FlashDrawerProps) {
             </div>
           </div>
 
-          {item.logs && item.logs.length > 0 && (
+          {item.logs === undefined ? (
+            <div className="space-y-2">
+              <div className="text-xs font-bold text-theme-text-muted">Flash Log</div>
+              <div className="bg-theme-bg border border-theme-border rounded p-3 text-xs text-theme-text-muted">
+                Loading logs...
+              </div>
+            </div>
+          ) : item.logs.length > 0 ? (
             <div className="space-y-2">
               <div className="text-xs font-bold text-theme-text-muted">Flash Log</div>
               <div className="bg-theme-bg border border-theme-border rounded p-3 max-h-48 overflow-y-auto">
-                {item.logs.map((line) => (
+                {item.logs.map((line, index) => (
                   <div
-                    key={line.slice(0, 40)}
+                    key={`${item.id}-${index}`}
                     className="text-xs font-mono text-theme-text-muted leading-relaxed whitespace-pre-wrap"
                   >
                     {line}
@@ -100,7 +107,7 @@ export function FlashDrawer({ item, onClose, onSaveNotes }: FlashDrawerProps) {
                 ))}
               </div>
             </div>
-          )}
+          ) : null}
         </div>
       )}
     </DetailDrawer>
