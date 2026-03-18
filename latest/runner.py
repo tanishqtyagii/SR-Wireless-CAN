@@ -1,7 +1,7 @@
 # runner.py
 from CAN_controller import CANController
 from bootloader import bootload
-from hex_transfer import flash_hex
+from hex_transfer import hex_transfer
 from finalization import finalize
 from intelhex import IntelHex
 # import subprocess
