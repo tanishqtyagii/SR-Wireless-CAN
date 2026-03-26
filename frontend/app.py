@@ -44,6 +44,24 @@ def _get_power_cycle() -> bool:
         return _power_cycle_active
 
 
+# ── IMD confirmation gate ─────────────────────────────────────────────────────
+
+_imd_lock = threading.Lock()
+_imd_waiting: bool = False
+_imd_event = threading.Event()
+
+
+def _set_imd_waiting(val: bool) -> None:
+    global _imd_waiting
+    with _imd_lock:
+        _imd_waiting = val
+
+
+def _get_imd_waiting() -> bool:
+    with _imd_lock:
+        return _imd_waiting
+
+
 class _PowerCycleInterceptor:
     """Wraps sys.stdout; fires _set_power_cycle(True) on the first power-cycle print."""
 
@@ -205,6 +223,15 @@ def _run_boot_and_flash(file_id: str, display_name: str, history_id: str) -> Non
                 _set_power_cycle(False)
             log("Bootloader acknowledged")
 
+            log("Waiting for IMD confirmation before flashing...")
+            _imd_event.clear()
+            _set_imd_waiting(True)
+            confirmed = _imd_event.wait(timeout=300)  # 5-minute timeout
+            _set_imd_waiting(False)
+            if not confirmed:
+                raise Exception("IMD confirmation timed out (5 min). Aborting flash.")
+            log("IMD confirmed — proceeding with flash")
+
             log(f"Uploading binary ({_size_kb(file_id):.1f} KB)...")
             ih = _load_hex_lenient(path)
             header80 = _load_header80()
@@ -324,7 +351,17 @@ def _run_flash_only(file_id: str, display_name: str, history_id: str) -> None:
 
 @app.get("/api/vcu-state")
 def get_vcu_state():
-    return jsonify({"state": db.get_vcu_state(), "powerCycle": _get_power_cycle()})
+    return jsonify({
+        "state": db.get_vcu_state(),
+        "powerCycle": _get_power_cycle(),
+        "imdWaiting": _get_imd_waiting(),
+    })
+
+
+@app.post("/api/imd-confirm")
+def imd_confirm():
+    _imd_event.set()
+    return jsonify({"ok": True})
 
 
 # ── Hex Files ─────────────────────────────────────────────────────────────────

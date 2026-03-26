@@ -6,6 +6,8 @@ interface VcuStore {
   setVcuState: (state: VcuState) => void;
   powerCycleNeeded: boolean;
   setPowerCycleNeeded: (val: boolean) => void;
+  imdWaiting: boolean;
+  setImdWaiting: (val: boolean) => void;
 }
 
 export const useVcuStore = create<VcuStore>((set) => ({
@@ -13,4 +15,6 @@ export const useVcuStore = create<VcuStore>((set) => ({
   setVcuState: (state) => set({ vcuState: state }),
   powerCycleNeeded: false,
   setPowerCycleNeeded: (val) => set({ powerCycleNeeded: val }),
+  imdWaiting: false,
+  setImdWaiting: (val) => set({ imdWaiting: val }),
 }));

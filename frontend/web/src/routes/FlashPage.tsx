@@ -74,19 +74,21 @@ function formatRecentFlashTimestamp(timestamp: string): string {
 }
 
 export default function FlashPage() {
-  const { 
-    vcuState, 
-    history, 
+  const {
+    vcuState,
+    history,
     isBusy,
     backendDown,
     errorMessage,
     powerCycleNeeded,
+    imdWaiting,
     liveLogs,
-    handleBoot, 
-    handleBootAndFlash, 
+    handleBoot,
+    handleBootAndFlash,
     handleFlashOnly,
     handleUpdateHistoryNotes,
     handleSelectStoredHex,
+    handleImdConfirm,
   } = useVcuApp();
   
   const [fileState, dispatchFile] = useReducer(fileReducer, {
@@ -225,6 +227,20 @@ export default function FlashPage() {
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-3 px-5 py-3 rounded-lg border border-red-500 bg-theme-bg shadow-lg">
           <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
           <span className="text-sm font-bold text-red-400 uppercase tracking-widest">Power cycle the car</span>
+        </div>
+      )}
+
+      {/* IMD confirmation banner */}
+      {imdWaiting && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-4 px-5 py-3 rounded-lg border border-yellow-500 bg-theme-bg shadow-lg">
+          <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse shrink-0" />
+          <span className="text-sm font-bold text-yellow-400 uppercase tracking-widest">Press IMD button on car</span>
+          <button
+            onClick={handleImdConfirm}
+            className="ml-2 px-4 py-1.5 rounded-md bg-yellow-500 hover:bg-yellow-400 text-black text-xs font-bold uppercase tracking-wide transition-colors"
+          >
+            IMD OK
+          </button>
         </div>
       )}
 

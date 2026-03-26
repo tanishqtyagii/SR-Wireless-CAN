@@ -2,7 +2,31 @@ __pycache__/
 *.pyc
 .venv/
 
+# IDE
+.idea/
+
+# Node
+node_modules/
+dist/
+
+# Database
 db/vcu.db
 db/vcu.db-shm
 db/vcu.db-wal
 db/uploads/
+
+# Firmware files (large binaries)
+hex_files/
+
+# Archives
+*.zip
+.idea/Code.iml
+.idea/deployment.xml
+.idea/inspectionProfiles/profiles_settings.xml
+.idea/inspectionProfiles/Project_Default.xml
+.idea/misc.xml
+.idea/modules.xml
+.idea/SR-Wireless-CAN.iml
+.idea/sshConfigs.xml
+.idea/vcs.xml
+.idea/webServers.xml

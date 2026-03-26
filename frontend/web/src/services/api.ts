@@ -27,8 +27,11 @@ export const fetchFlashHistory = (options: FetchFlashHistoryOptions = {}): Promi
   return apiFetch(`/flash-history${query ? `?${query}` : ""}`);
 };
 
-export const fetchVcuState = (): Promise<{ state: VcuState; powerCycle?: boolean }> =>
+export const fetchVcuState = (): Promise<{ state: VcuState; powerCycle?: boolean; imdWaiting?: boolean }> =>
   apiFetch("/vcu-state");
+
+export const confirmImd = (): Promise<{ ok: boolean }> =>
+  apiFetch("/imd-confirm", { method: "POST" });
 
 export const bootloadOnly = () =>
   apiFetch("/bootload", { method: "POST" });

@@ -3,6 +3,7 @@ import { useVcuStore } from "../store/vcuStore";
 import {
   bootAndFlash,
   bootloadOnly,
+  confirmImd,
   fetchFlashHistory,
   fetchFlashLogs,
   fetchVcuState,
@@ -61,6 +62,8 @@ export function useVcuApp() {
   const setVcuState = useVcuStore((state) => state.setVcuState);
   const powerCycleNeeded = useVcuStore((state) => state.powerCycleNeeded);
   const setPowerCycleNeeded = useVcuStore((state) => state.setPowerCycleNeeded);
+  const imdWaiting = useVcuStore((state) => state.imdWaiting);
+  const setImdWaiting = useVcuStore((state) => state.setImdWaiting);
 
   const [history, setHistory] = useState<FlashHistoryEntry[]>(_cachedHistory);
   const [isBusy, setIsBusy] = useState(false);
@@ -97,6 +100,7 @@ export function useVcuApp() {
           setVcuState(statePayload.state);
         }
         setPowerCycleNeeded(statePayload?.powerCycle ?? false);
+        setImdWaiting(statePayload?.imdWaiting ?? false);
 
         if (activeHistoryIdRef.current) {
           const activeEntry = items.find((entry) => entry.id === activeHistoryIdRef.current);
@@ -238,6 +242,10 @@ export function useVcuApp() {
     await refreshData();
   };
   const handleSelectStoredHex = (fileId: string) => getStoredHexFile(fileId);
+  const handleImdConfirm = async () => {
+    await confirmImd();
+    await refreshData();
+  };
 
   return {
     vcuState,
@@ -246,11 +254,13 @@ export function useVcuApp() {
     backendDown,
     errorMessage,
     powerCycleNeeded,
+    imdWaiting,
     liveLogs,
     handleBoot,
     handleBootAndFlash,
     handleFlashOnly,
     handleUpdateHistoryNotes,
     handleSelectStoredHex,
+    handleImdConfirm,
   };
 }
