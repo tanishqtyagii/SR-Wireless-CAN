@@ -11,23 +11,10 @@ def _u32_be(x: int) -> List[int]:
     return [(x >> 24) & 0xFF, (x >> 16) & 0xFF, (x >> 8) & 0xFF, x & 0xFF]
 
 
-def hex_length(ih: IntelHex) -> int:
-    FLASH_BASE = 0xC10000  # protocol fact
-
-    mn = ih.minaddr()
-    mx = ih.maxaddr()
-    if mn is None or mx is None:
-        raise ValueError("HEX has no data records")
-    if mx < FLASH_BASE:
-        raise ValueError(f"HEX maxaddr 0x{mx:X} is below FLASH_BASE 0x{FLASH_BASE:X}")
-
-    return (mx - FLASH_BASE) + 1
-
-
 def calculate_0x0C_frames(ih: IntelHex, length: int) -> List[List[int]]:
-    FLASH_BASE = 0xC10000  # protocol fact
-    SESSION = 0x01         # protocol fact
-    CHUNK = 0x10000        # protocol fact (64KiB)
+    FLASH_BASE = 0xC10000  # static
+    SESSION = 0x01         # static
+    CHUNK = 0x10000        # static
 
     mn = ih.minaddr()
     mx = ih.maxaddr()
@@ -59,7 +46,7 @@ def calculate_0x0C_frames(ih: IntelHex, length: int) -> List[List[int]]:
     return frames
 
 
-def hex_transfer(
+def flash_hex(
     ctrl: CANController,
     ih: IntelHex,
     header80: List[int],
@@ -67,25 +54,17 @@ def hex_transfer(
     do_flash_kernel: bool = True,
     do_erase: bool = True,
 ) -> dict:
-    """
-    Same logic as your flash_hex, but tightened timing:
-      - no per-frame sleep (SEND_DELAY_MS = 0)
-      - no 500ms staging-pointer sleep between blocks
-      - pacing remains via 0x02 poll/ack (trace-style)
-    """
 
-    # ---- protocol facts / hardcoded knobs (match your trace conventions) ----
-    SESSION = 0x01
+    # all statics
     FLASH_BASE = 0xC10000
     STAGING_ADDR = 0xE08000
     BLOCK_SIZE = 0x8000
     CHUNK_SIZE = 6
-    POLL_EVERY_FRAMES = 11          # 11 * 6 = 66 (0x42) typical
+    POLL_EVERY_FRAMES = 11          # 11 * 6 = 66 (0x42)
 
-    # tightened: remove artificial sleeps
-    SEND_DELAY_MS = 0
+    SEND_DELAY_MS = 0 # try not to change, testing at 0 to see if flashing is continuous
 
-    # timeouts don't slow you down unless you miss an ack (so keep reasonable)
+    # timeout constants
     PTR_TIMEOUT_MS = 1000
     POLL_TIMEOUT_MS = 1000
     COMMIT_TIMEOUT_MS = 3000
@@ -93,33 +72,38 @@ def hex_transfer(
 
     send_can = ctrl.send_can
     VCU_response = ctrl.VCU_response
+    hex_length = ctrl.hex_length
 
-    # ---- validate header ----
+    # header validation, (just a precaution)
     if not isinstance(header80, list) or len(header80) != 0x80:
         raise ValueError("header80 must be a list of exactly 0x80 ints")
     if any((not isinstance(b, int) or b < 0 or b > 0xFF) for b in header80):
         raise ValueError("header80 elements must be ints 0..255")
 
-    # ---- optional flash kernel stage ----
+    # always runs, kept as a variable in case something changes
     if do_flash_kernel:
         flash_kernel(ctrl)
     else:
-        # If kernel isn't flashed, still set kernel load pointer (trace has this just once).
         send_can(canid=0x001, data=[0x0D, 0x01, 0x00, 0xE0, 0x00, 0x00], delay=SEND_DELAY_MS)
         VCU_response(0x002, data=[0x0D, 0x01], timeout=PTR_TIMEOUT_MS)
 
-    # ---- compute image length + optional erase frames (0x0C) ----
+    # calculates writable length of hex file
     length = hex_length(ih)
 
+    # also always runs usually
     if do_erase:
         erase_frames = calculate_0x0C_frames(ih, length)
         for frame in erase_frames:
             send_can(0x001, frame, delay=SEND_DELAY_MS)
             VCU_response(0x002, prefix=[0x0C, 0x01, 0x01], timeout=ERASE_ACK_TIMEOUT_MS)
 
-    # ---- build exact streamed image bytes from FLASH_BASE for 'length' bytes, pad gaps with 0xFF ----
+
     end_addr = FLASH_BASE + length - 1
-    image = bytearray(ih.tobinarray(start=FLASH_BASE, end=end_addr, pad=0xFF))  # inclusive end
+
+    # TESTING 03/22/26 -> fixing stupid IH deprecation warning
+    ih.padding = 0xFF
+    image = bytearray(ih.tobinarray(start=FLASH_BASE, size=length))  # inclusive end
+
     if len(image) < 0x80:
         raise ValueError("HEX image is smaller than 0x80 bytes; cannot apply APDB header")
     image[0:0x80] = bytes(header80)
@@ -127,9 +111,9 @@ def hex_transfer(
     total_len = len(image)
     mv = memoryview(image)
 
-    # ---- set pointer to staging buffer (0x0D -> E08000) ----
-    send_can(0x001, [0x0D, SESSION] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
-    VCU_response(0x002, data=[0x0D, SESSION], timeout=PTR_TIMEOUT_MS)
+    # sets pointer back to staging buffer (32KB)
+    send_can(0x001, [0x0D, 01] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
+    VCU_response(0x002, data=[0x0D, 01], timeout=PTR_TIMEOUT_MS)
 
     offset = 0
     block_index = 0
@@ -138,59 +122,57 @@ def hex_transfer(
         this_len = min(BLOCK_SIZE, total_len - offset)
         block = mv[offset: offset + this_len]
 
-        # ---- write into staging: 0x05 frames (<=6 bytes), poll 0x02 every 11 frames ----
         frames_since_poll = 0
         bytes_since_poll = 0
 
         i = 0
         while i < this_len:
             chunk = block[i: i + CHUNK_SIZE]
-            send_can(0x001, [0x05, SESSION] + list(chunk), delay=SEND_DELAY_MS)
+            send_can(0x001, [0x05, 01] + list(chunk), delay=SEND_DELAY_MS)
 
             frames_since_poll += 1
             bytes_since_poll += len(chunk)
             i += len(chunk)
 
             if frames_since_poll >= POLL_EVERY_FRAMES:
-                send_can(0x001, [0x02, SESSION], delay=SEND_DELAY_MS)
+                send_can(0x001, [0x02, 01], delay=SEND_DELAY_MS)
                 expected = bytes_since_poll & 0xFF
                 VCU_response(
                     0x002,
-                    data=[0x02, SESSION, 0x00, expected, 0x00, 0x00],
+                    data=[0x02, 01, 0x00, expected, 0x00, 0x00],
                     timeout=POLL_TIMEOUT_MS,
                 )
                 frames_since_poll = 0
                 bytes_since_poll = 0
 
-        # ---- final remainder poll at end-of-block ----
+        # final remainder poll at end-of-block
         if bytes_since_poll > 0:
-            send_can(0x001, [0x02, SESSION], delay=SEND_DELAY_MS)
+            send_can(0x001, [0x02, 01], delay=SEND_DELAY_MS)
             expected = bytes_since_poll & 0xFF
             VCU_response(
                 0x002,
-                data=[0x02, SESSION, 0x00, expected, 0x00, 0x00],
+                data=[0x02, 01, 0x00, expected, 0x00, 0x00],
                 timeout=POLL_TIMEOUT_MS,
             )
 
-        # ---- set destination pointer: 0x0D -> FLASH_BASE + offset ----
+        # sets destination pointer to FLASH_BASE + offset
         dest_addr = FLASH_BASE + offset
-        send_can(0x001, [0x0D, SESSION] + _u32_be(dest_addr), delay=SEND_DELAY_MS)
-        VCU_response(0x002, data=[0x0D, SESSION], timeout=PTR_TIMEOUT_MS)
+        send_can(0x001, [0x0D, 01] + _u32_be(dest_addr), delay=SEND_DELAY_MS)
+        VCU_response(0x002, data=[0x0D, 01], timeout=PTR_TIMEOUT_MS)
 
-        # ---- commit: 0x0B copies from E08000 (staging) to current dest pointer ----
+        # commits written length from staging buffer to flash memory
         len_m1 = this_len - 1
-        commit = [0x0B, SESSION, 0x00, 0xE0, 0x80, 0x00, (len_m1 >> 8) & 0xFF, len_m1 & 0xFF]
+        commit = [0x0B, 01, 0x00, 0xE0, 0x80, 0x00, (len_m1 >> 8) & 0xFF, len_m1 & 0xFF]
         send_can(0x001, commit, delay=SEND_DELAY_MS)
-        VCU_response(0x002, data=[0x0B, SESSION, 0x01], timeout=COMMIT_TIMEOUT_MS)
+        VCU_response(0x002, data=[0x0B, 01, 0x01], timeout=COMMIT_TIMEOUT_MS)
 
         offset += this_len
         block_index += 1
 
-        # ---- trace resets staging pointer only if another block follows ----
+        # looped to reset staging pointer while theres chunks left to be written
         if offset < total_len:
-            # tightened: no 500ms sleep; reset immediately and wait for ack
-            send_can(0x001, [0x0D, SESSION] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
-            VCU_response(0x002, data=[0x0D, SESSION], timeout=PTR_TIMEOUT_MS)
+            send_can(0x001, [0x0D, 01] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
+            VCU_response(0x002, data=[0x0D, 01], timeout=PTR_TIMEOUT_MS)
 
     return {
         "status": "success",

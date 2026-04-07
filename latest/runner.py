@@ -4,6 +4,7 @@ from bootloader import bootload
 from hex_transfer import hex_transfer, flash_hex
 from finalization import finalize
 from intelhex import IntelHex
+from return_header import return_header
 # import subprocess
 import time
 
@@ -18,16 +19,7 @@ header80 = [
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x83, 0xC7, 0x74, 0x80
 ]
 
-# def bring_can_up() -> None:
-#     subprocess.run(["sudo", "ip", "link", "set", "can0", "down"], check=True)
-#     time.sleep(1)
-#     subprocess.run(["sudo", "ip", "link", "set", "can0", "type", "can", "bitrate", "500000"], check=True)
-#     time.sleep(1)
-#     subprocess.run(["sudo", "ip", "link", "set", "can0", "txqueuelen", "4096"], check=True)
-#     time.sleep(1)# or 1024, 4096, etc.
-#     subprocess.run(["sudo", "ip", "link", "set", "can0", "up"], check=True)
-#     time.sleep(1)
-#     print("done")
+
 
 file = "231_80kw.hex"
 
@@ -38,10 +30,12 @@ def main() -> None:
         # bring_can_up()
         # 1) Bootload / enter loader
         bootload(ctrl)
+        print("Bootloader loaded")
 
         # 2) Flash HEX (kernel+erase on by default in your flash_hex)
         ih = IntelHex(file)
-        flash_hex(ctrl, ih, header80, do_flash_kernel=True, do_erase=True)
+        header = return_header(ctrl, ih)
+        flash_hex(ctrl, ih, header, do_flash_kernel=True, do_erase=True)
 
         # 3) Finalize
         finalize(ctrl)
