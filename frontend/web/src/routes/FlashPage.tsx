@@ -269,12 +269,12 @@ export default function FlashPage() {
       <header className="flex justify-between items-center shrink-0">
         <div className="flex items-center gap-4">
           <img src="/branding/spartan-logo.png" alt="Spartan Racing" className="h-10 w-auto object-contain" />
-          <nav className="flex items-center gap-1 border border-theme-border bg-theme-panel rounded-full p-1">
+          <nav className="flex items-center gap-1 h-8 border border-theme-border bg-theme-panel rounded-full p-0.5">
             <button
               onClick={() => navigate("/")}
-              className={`px-4 py-1 text-xs font-bold tracking-wide rounded-full transition-colors ${
+              className={`px-4 h-full flex items-center justify-center text-[11px] font-bold tracking-widest rounded-full transition-colors ${
                 location.pathname === "/"
-                  ? "bg-theme-text text-theme-bg"
+                  ? "bg-theme-text text-theme-bg shadow-sm"
                   : "text-theme-text-muted hover:text-theme-text"
               }`}
             >
@@ -282,9 +282,9 @@ export default function FlashPage() {
             </button>
             <button
               onClick={() => navigate("/library")}
-              className={`px-4 py-1 text-xs font-bold tracking-wide rounded-full transition-colors ${
+              className={`px-4 h-full flex items-center justify-center text-[11px] font-bold tracking-widest rounded-full transition-colors ${
                 location.pathname === "/library"
-                  ? "bg-theme-text text-theme-bg"
+                  ? "bg-theme-text text-theme-bg shadow-sm"
                   : "text-theme-text-muted hover:text-theme-text"
               }`}
             >
@@ -300,7 +300,7 @@ export default function FlashPage() {
                 setOperatorName("");
               }}
               title="Switch operator"
-              className="flex items-center gap-2 border border-theme-border bg-theme-panel hover:bg-theme-panel-hover px-3 py-1.5 rounded-full transition-colors shadow-sm"
+              className="flex items-center gap-2 h-8 px-3 border border-theme-border bg-theme-panel hover:bg-theme-panel-hover rounded-full transition-colors shadow-sm"
             >
               <span className="text-xs font-semibold text-theme-text">{operatorName}</span>
               <svg className="w-3 h-3 text-theme-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -309,13 +309,13 @@ export default function FlashPage() {
               </svg>
             </button>
           )}
-          <div className="flex items-center gap-3 border border-theme-border bg-theme-panel px-3 py-1.5 rounded-full shadow-sm">
+          <div className="flex items-center gap-3 h-8 px-3 border border-theme-border bg-theme-panel rounded-full shadow-sm">
             <span className="text-xs font-semibold text-theme-text-muted tracking-wide">CURRENT STATE</span>
             <StatusPill status={vcuState} className="!border-none !bg-transparent !p-0 !text-xs" />
           </div>
           <button
             onClick={() => setLogOpen(true)}
-            className="relative flex items-center gap-2 border border-theme-border bg-theme-panel hover:bg-theme-panel-hover px-3 py-1.5 rounded-full transition-colors shadow-sm"
+            className="relative flex items-center gap-2 h-8 px-3 border border-theme-border bg-theme-panel hover:bg-theme-panel-hover rounded-full transition-colors shadow-sm"
             title="View operation log"
           >
             {/* Terminal icon */}
@@ -336,7 +336,7 @@ export default function FlashPage() {
               clearFile();
               window.location.reload();
             }}
-            className="text-xs text-theme-text-muted hover:text-red-400 transition-colors border border-theme-border px-2.5 py-1.5 rounded-full"
+            className="h-8 px-3 flex items-center justify-center text-xs text-theme-text-muted hover:text-red-400 transition-colors border border-theme-border rounded-full bg-theme-panel shadow-sm hover:border-red-400/50"
             title="Clear all local data"
           >
             Clear DB

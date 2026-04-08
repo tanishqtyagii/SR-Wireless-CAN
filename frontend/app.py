@@ -24,7 +24,7 @@ if LATEST_DIR not in sys.path:
 from CAN_controller import CANController
 from bootloader import bootload as run_bootload
 from finalization import finalize as run_finalize
-from hex_transfer import hex_transfer as run_hex_transfer
+from hex_transfer import flash_hex as run_hex_transfer
 from intelhex import IntelHex
 
 # ── Power-cycle flag ──────────────────────────────────────────────────────────

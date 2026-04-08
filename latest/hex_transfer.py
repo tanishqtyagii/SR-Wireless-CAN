@@ -112,8 +112,8 @@ def flash_hex(
     mv = memoryview(image)
 
     # sets pointer back to staging buffer (32KB)
-    send_can(0x001, [0x0D, 01] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
-    VCU_response(0x002, data=[0x0D, 01], timeout=PTR_TIMEOUT_MS)
+    send_can(0x001, [0x0D, 0x01] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
+    VCU_response(0x002, data=[0x0D, 0x01], timeout=PTR_TIMEOUT_MS)
 
     offset = 0
     block_index = 0
@@ -128,18 +128,18 @@ def flash_hex(
         i = 0
         while i < this_len:
             chunk = block[i: i + CHUNK_SIZE]
-            send_can(0x001, [0x05, 01] + list(chunk), delay=SEND_DELAY_MS)
+            send_can(0x001, [0x05, 0x01] + list(chunk), delay=SEND_DELAY_MS)
 
             frames_since_poll += 1
             bytes_since_poll += len(chunk)
             i += len(chunk)
 
             if frames_since_poll >= POLL_EVERY_FRAMES:
-                send_can(0x001, [0x02, 01], delay=SEND_DELAY_MS)
+                send_can(0x001, [0x02, 0x01], delay=SEND_DELAY_MS)
                 expected = bytes_since_poll & 0xFF
                 VCU_response(
                     0x002,
-                    data=[0x02, 01, 0x00, expected, 0x00, 0x00],
+                    data=[0x02, 0x01, 0x00, expected, 0x00, 0x00],
                     timeout=POLL_TIMEOUT_MS,
                 )
                 frames_since_poll = 0
@@ -147,32 +147,32 @@ def flash_hex(
 
         # final remainder poll at end-of-block
         if bytes_since_poll > 0:
-            send_can(0x001, [0x02, 01], delay=SEND_DELAY_MS)
+            send_can(0x001, [0x02, 0x01], delay=SEND_DELAY_MS)
             expected = bytes_since_poll & 0xFF
             VCU_response(
                 0x002,
-                data=[0x02, 01, 0x00, expected, 0x00, 0x00],
+                data=[0x02, 0x01, 0x00, expected, 0x00, 0x00],
                 timeout=POLL_TIMEOUT_MS,
             )
 
         # sets destination pointer to FLASH_BASE + offset
         dest_addr = FLASH_BASE + offset
-        send_can(0x001, [0x0D, 01] + _u32_be(dest_addr), delay=SEND_DELAY_MS)
-        VCU_response(0x002, data=[0x0D, 01], timeout=PTR_TIMEOUT_MS)
+        send_can(0x001, [0x0D, 0x01] + _u32_be(dest_addr), delay=SEND_DELAY_MS)
+        VCU_response(0x002, data=[0x0D, 0x01], timeout=PTR_TIMEOUT_MS)
 
         # commits written length from staging buffer to flash memory
         len_m1 = this_len - 1
-        commit = [0x0B, 01, 0x00, 0xE0, 0x80, 0x00, (len_m1 >> 8) & 0xFF, len_m1 & 0xFF]
+        commit = [0x0B, 0x01, 0x00, 0xE0, 0x80, 0x00, (len_m1 >> 8) & 0xFF, len_m1 & 0xFF]
         send_can(0x001, commit, delay=SEND_DELAY_MS)
-        VCU_response(0x002, data=[0x0B, 01, 0x01], timeout=COMMIT_TIMEOUT_MS)
+        VCU_response(0x002, data=[0x0B, 0x01, 0x01], timeout=COMMIT_TIMEOUT_MS)
 
         offset += this_len
         block_index += 1
 
         # looped to reset staging pointer while theres chunks left to be written
         if offset < total_len:
-            send_can(0x001, [0x0D, 01] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
-            VCU_response(0x002, data=[0x0D, 01], timeout=PTR_TIMEOUT_MS)
+            send_can(0x001, [0x0D, 0x01] + _u32_be(STAGING_ADDR), delay=SEND_DELAY_MS)
+            VCU_response(0x002, data=[0x0D, 0x01], timeout=PTR_TIMEOUT_MS)
 
     return {
         "status": "success",
@@ -183,3 +183,6 @@ def flash_hex(
         "erased": bool(do_erase),
         "kernel": bool(do_flash_kernel),
     }
+
+
+hex_transfer = flash_hex
