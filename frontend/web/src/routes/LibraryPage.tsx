@@ -1,40 +1,62 @@
 
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/Button";
 import { Panel } from "../components/ui/Panel";
 import { StatusPill } from "../components/ui/StatusPill";
-import { fetchFlashHistory, fetchFlashLogs, fetchHexFiles, updateHexFileNotes, updateFlashHistoryNotes } from "../services/api";
+import { fetchFlashLogs, fetchLibrarySnapshot, updateHexFileNotes, updateFlashHistoryNotes } from "../services/api";
 import { subscribeToBroadcast } from "../services/ws";
-import { FlashHistoryEntry, HexFile } from "../types";
+import { FlashHistoryEntry, LibraryGroupedEntry } from "../types";
 
 const DetailDrawer = lazy(() =>
   import("../components/ui/DetailDrawer").then((module) => ({ default: module.DetailDrawer }))
 );
 
-let _cachedFiles: HexFile[] = [];
-const _cachedHistoryByFile = new Map<string, FlashHistoryEntry[]>();
-const _cachedLogsByHistory = new Map<string, string[]>();
-let _filesPrefetch: Promise<HexFile[]> | null = null;
+const FILES_STORAGE_KEY = "sr_library_grouped_entries_v2";
+const ALL_FLASHES_STORAGE_KEY = "sr_library_all_flashes_v2";
 
-let _persistedFile: HexFile | null = null;
-let _persistedNotes = "";
-
-function prefetchFiles(): Promise<HexFile[]> {
-  if (!_filesPrefetch) {
-    _filesPrefetch = fetchHexFiles()
-      .then((data) => {
-        _cachedFiles = Array.isArray(data) ? data : [];
-        return _cachedFiles;
-      })
-      .catch(() => _cachedFiles);
+function loadPersistedFiles(): LibraryGroupedEntry[] {
+  try {
+    return JSON.parse(localStorage.getItem(FILES_STORAGE_KEY) ?? "[]");
+  } catch {
+    return [];
   }
-  return _filesPrefetch;
 }
 
-void prefetchFiles();
+function savePersistedFiles(items: LibraryGroupedEntry[]): void {
+  try {
+    localStorage.setItem(FILES_STORAGE_KEY, JSON.stringify(items));
+  } catch {
+    // Ignore quota failures.
+  }
+}
 
-function formatSize(bytes: number): string {
+function loadPersistedAllFlashes(): FlashHistoryEntry[] {
+  try {
+    return JSON.parse(localStorage.getItem(ALL_FLASHES_STORAGE_KEY) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function savePersistedAllFlashes(items: FlashHistoryEntry[]): void {
+  try {
+    localStorage.setItem(ALL_FLASHES_STORAGE_KEY, JSON.stringify(items));
+  } catch {
+    // Ignore quota failures.
+  }
+}
+
+let _cachedFiles: LibraryGroupedEntry[] = loadPersistedFiles();
+let _cachedAllFlashes: FlashHistoryEntry[] = loadPersistedAllFlashes();
+const _cachedHistoryByFile = new Map<string, FlashHistoryEntry[]>();
+const _cachedLogsByHistory = new Map<string, string[]>();
+
+let _persistedFile: LibraryGroupedEntry | null = null;
+let _persistedNotes = "";
+
+function formatSize(bytes: number | null | undefined): string {
+  if (bytes == null) return "-";
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
@@ -80,6 +102,58 @@ const sortOptions: { value: SortMode; label: string }[] = [
   { value: "name-asc", label: "Name (A-Z)" },
   { value: "name-desc", label: "Name (Z-A)" },
 ];
+
+type PreparedFile = {
+  item: LibraryGroupedEntry;
+  uploadedAtMs: number;
+  lastFlashedAtMs: number;
+  displayNameLower: string;
+  lastFlashedByLower: string;
+};
+
+type PreparedFlash = {
+  item: FlashHistoryEntry;
+  timestampMs: number;
+  operatorLower: string;
+  nameLower: string;
+};
+
+function prepareFileSortData(file: LibraryGroupedEntry): PreparedFile {
+  return {
+    item: file,
+    uploadedAtMs: Date.parse(file.uploadedAt ?? file.lastFlashedAt ?? ""),
+    lastFlashedAtMs: file.lastFlashedAt ? Date.parse(file.lastFlashedAt) : 0,
+    displayNameLower: (file.displayName || file.name).toLowerCase(),
+    lastFlashedByLower: (file.lastFlashedBy || "").toLowerCase(),
+  };
+}
+
+function normalizeLibraryName(value: string | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function buildHistoryCacheKey(file: LibraryGroupedEntry): string {
+  if (file.fileId) {
+    return `file:${file.fileId}`;
+  }
+  return `name:${normalizeLibraryName(file.displayName || file.name)}`;
+}
+
+function entryMatchesFile(entry: FlashHistoryEntry, file: LibraryGroupedEntry): boolean {
+  if (file.fileId && entry.fileId === file.fileId) {
+    return true;
+  }
+  return normalizeLibraryName(entry.name) === normalizeLibraryName(file.displayName || file.name);
+}
+
+function prepareFlashSortData(entry: FlashHistoryEntry): PreparedFlash {
+  return {
+    item: entry,
+    timestampMs: Date.parse(entry.timestamp),
+    operatorLower: (entry.operator || "").toLowerCase(),
+    nameLower: entry.name.toLowerCase(),
+  };
+}
 
 function SortSelect({ value, onChange }: { value: SortMode; onChange: (v: SortMode) => void }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -160,16 +234,16 @@ function SortSelect({ value, onChange }: { value: SortMode; onChange: (v: SortMo
 }
 
 export default function LibraryPage() {
-  const [files, setFiles] = useState<HexFile[]>(_cachedFiles);
+  const [files, setFiles] = useState<LibraryGroupedEntry[]>(_cachedFiles);
+  const [filesLoading, setFilesLoading] = useState(() => _cachedFiles.length === 0);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<HexFile | null>(_persistedFile);
+  const [selectedFile, setSelectedFile] = useState<LibraryGroupedEntry | null>(_persistedFile);
   const [drawerNotes, setDrawerNotes] = useState(_persistedNotes);
   const [savingNotes, setSavingNotes] = useState(false);
   const [fileHistory, setFileHistory] = useState<FlashHistoryEntry[]>(
-    _persistedFile ? attachCachedLogs(_cachedHistoryByFile.get(_persistedFile.id) ?? []) : []
+    _persistedFile ? attachCachedLogs(_cachedHistoryByFile.get(buildHistoryCacheKey(_persistedFile)) ?? []) : []
   );
-  const [historyLoading, setHistoryLoading] = useState(false);
   const [logLoadingId, setLogLoadingId] = useState<string | null>(null);
   const drawerNotesRef = useRef<HTMLTextAreaElement>(null);
   const navigate = useNavigate();
@@ -179,22 +253,20 @@ export default function LibraryPage() {
   const [showAllFlashes, setShowAllFlashes] = useState(() => {
     return localStorage.getItem("libraryShowAllFlashes") === "true";
   });
-  const [allFlashes, setAllFlashes] = useState<FlashHistoryEntry[]>([]);
+  const [allFlashes, setAllFlashes] = useState<FlashHistoryEntry[]>(_cachedAllFlashes);
+  const [allFlashesLoading, setAllFlashesLoading] = useState(() => showAllFlashes && _cachedAllFlashes.length === 0);
 
   const visibleFlashes = useMemo(() => {
-    return allFlashes.filter((entry) => entry.fileId);
+    return allFlashes.filter((entry) => {
+      if (entry.action) {
+        return entry.action !== "bootload";
+      }
+      if (entry.fileId) {
+        return true;
+      }
+      return entry.name.trim().toLowerCase() !== "bootload";
+    });
   }, [allFlashes]);
-
-  useEffect(() => {
-    localStorage.setItem("libraryShowAllFlashes", String(showAllFlashes));
-    if (showAllFlashes) {
-      setHistoryLoading(true);
-      fetchFlashHistory()
-        .then((data) => setAllFlashes(Array.isArray(data) ? data : []))
-        .catch(() => {})
-        .finally(() => setHistoryLoading(false));
-    }
-  }, [showAllFlashes]);
 
   const [sortMode, setSortMode] = useState<SortMode>(() => {
     return (localStorage.getItem("librarySortMode") as SortMode) || "newest";
@@ -204,187 +276,206 @@ export default function LibraryPage() {
     localStorage.setItem("librarySortMode", sortMode);
   }, [sortMode]);
 
+  const preparedFiles = useMemo(() => files.map(prepareFileSortData), [files]);
+  const preparedFlashes = useMemo(() => visibleFlashes.map(prepareFlashSortData), [visibleFlashes]);
+
   const sortedFiles = useMemo(() => {
-    const list = [...files];
+    const list = [...preparedFiles];
     const myName = localStorage.getItem(OPERATOR_KEY) || "";
+    const myNameLower = myName.toLowerCase();
 
     list.sort((a, b) => {
       if (sortMode === "newest") {
-        return new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime();
+        return b.uploadedAtMs - a.uploadedAtMs;
       } else if (sortMode === "oldest") {
-        return new Date(a.uploadedAt).getTime() - new Date(b.uploadedAt).getTime();
+        return a.uploadedAtMs - b.uploadedAtMs;
       } else if (sortMode === "flashed") {
-        const tA = a.lastFlashedAt ? new Date(a.lastFlashedAt).getTime() : 0;
-        const tB = b.lastFlashedAt ? new Date(b.lastFlashedAt).getTime() : 0;
-        return tB - tA;
+        return b.lastFlashedAtMs - a.lastFlashedAtMs;
       } else if (sortMode === "my-flashes") {
-        const aIsMine = a.lastFlashedBy === myName;
-        const bIsMine = b.lastFlashedBy === myName;
+        const aIsMine = a.lastFlashedByLower === myNameLower;
+        const bIsMine = b.lastFlashedByLower === myNameLower;
         if (aIsMine && !bIsMine) return -1;
         if (!aIsMine && bIsMine) return 1;
-        return new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime();
+        return b.uploadedAtMs - a.uploadedAtMs;
       } else if (sortMode === "operator-asc") {
-        const opA = (a.lastFlashedBy || "").toLowerCase();
-        const opB = (b.lastFlashedBy || "").toLowerCase();
+        const opA = a.lastFlashedByLower;
+        const opB = b.lastFlashedByLower;
         if (!opA && opB) return 1;
         if (opA && !opB) return -1;
-        if (!opA && !opB) return new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime();
+        if (!opA && !opB) return b.uploadedAtMs - a.uploadedAtMs;
         return opA.localeCompare(opB);
       } else if (sortMode === "name-asc") {
-        const nameA = (a.displayName || a.name).toLowerCase();
-        const nameB = (b.displayName || b.name).toLowerCase();
-        return nameA.localeCompare(nameB);
+        return a.displayNameLower.localeCompare(b.displayNameLower);
       } else if (sortMode === "name-desc") {
-        const nameA = (a.displayName || a.name).toLowerCase();
-        const nameB = (b.displayName || b.name).toLowerCase();
-        return nameB.localeCompare(nameA);
+        return b.displayNameLower.localeCompare(a.displayNameLower);
       }
       return 0;
     });
-    return list;
-  }, [files, sortMode]);
+    return list.map((entry) => entry.item);
+  }, [preparedFiles, sortMode]);
 
   const sortedFlashes = useMemo(() => {
-    const list = [...visibleFlashes];
+    const list = [...preparedFlashes];
     const myName = localStorage.getItem(OPERATOR_KEY) || "";
+    const myNameLower = myName.toLowerCase();
 
     list.sort((a, b) => {
-      const timeA = new Date(a.timestamp).getTime();
-      const timeB = new Date(b.timestamp).getTime();
+      const timeA = a.timestampMs;
+      const timeB = b.timestampMs;
 
       if (sortMode === "newest" || sortMode === "flashed") {
         return timeB - timeA;
       } else if (sortMode === "oldest") {
         return timeA - timeB;
       } else if (sortMode === "my-flashes") {
-        const aIsMine = a.operator === myName;
-        const bIsMine = b.operator === myName;
+        const aIsMine = a.operatorLower === myNameLower;
+        const bIsMine = b.operatorLower === myNameLower;
         if (aIsMine && !bIsMine) return -1;
         if (!aIsMine && bIsMine) return 1;
         return timeB - timeA;
       } else if (sortMode === "operator-asc") {
-        const opA = (a.operator || "").toLowerCase();
-        const opB = (b.operator || "").toLowerCase();
+        const opA = a.operatorLower;
+        const opB = b.operatorLower;
         if (!opA && opB) return 1;
         if (opA && !opB) return -1;
         if (!opA && !opB) return timeB - timeA;
         return opA.localeCompare(opB);
       } else if (sortMode === "name-asc") {
-        return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+        return a.nameLower.localeCompare(b.nameLower);
       } else if (sortMode === "name-desc") {
-        return b.name.toLowerCase().localeCompare(a.name.toLowerCase());
+        return b.nameLower.localeCompare(a.nameLower);
       }
       return 0;
     });
-    return list;
-  }, [visibleFlashes, sortMode]);
+    return list.map((entry) => entry.item);
+  }, [preparedFlashes, sortMode]);
+
+  const renderedFiles = sortedFiles;
 
   const latestFlashedFileId = useMemo(() => {
-    return files.reduce((latest, current) => {
+    return renderedFiles.reduce((latest, current) => {
       if (!current.lastFlashedAt) return latest;
-      if (!latest || new Date(current.lastFlashedAt).getTime() > new Date(latest.lastFlashedAt!).getTime()) {
+      if (!latest || new Date(current.lastFlashedAt).getTime() > new Date(latest.lastFlashedAt ?? 0).getTime()) {
         return current;
       }
       return latest;
-    }, null as HexFile | null)?.id;
-  }, [files]);
+    }, null as LibraryGroupedEntry | null)?.id;
+  }, [renderedFiles]);
 
-  const latestFlashId = useMemo(() => {
-    return visibleFlashes.reduce((latest, current) => {
+  const renderedFlashes = sortedFlashes;
+  const latestRenderedFlashId = useMemo(() => {
+    return renderedFlashes.reduce((latest, current) => {
       if (!latest || new Date(current.timestamp).getTime() > new Date(latest.timestamp).getTime()) {
         return current;
       }
       return latest;
     }, null as FlashHistoryEntry | null)?.id;
-  }, [visibleFlashes]);
+  }, [renderedFlashes]);
 
-  const loadFiles = (force = false) => {
-    if (refreshInFlightRef.current && !force) {
+  const loadLibraryData = useCallback(() => {
+    if (refreshInFlightRef.current) {
       return refreshInFlightRef.current;
     }
 
-    const tasks: Promise<any>[] = [
-      fetchHexFiles()
-        .then((data) => {
-          const nextFiles = Array.isArray(data) ? data : [];
-          _cachedFiles = nextFiles;
-          _filesPrefetch = Promise.resolve(nextFiles);
-          setFiles(nextFiles);
-        })
-        .catch(() => {})
-    ];
-
-    if (showAllFlashes) {
-      tasks.push(
-        fetchFlashHistory()
-          .then((data) => setAllFlashes(Array.isArray(data) ? data : []))
-          .catch(() => {})
-      );
+    if (_cachedFiles.length === 0) {
+      setFilesLoading(true);
+    }
+    if (showAllFlashes && _cachedAllFlashes.length === 0) {
+      setAllFlashesLoading(true);
     }
 
-    const task = Promise.all(tasks).finally(() => {
-      refreshInFlightRef.current = null;
-    }) as unknown as Promise<void>;
+    const task = fetchLibrarySnapshot()
+      .then((data) => {
+        const nextFiles = Array.isArray(data.grouped) ? data.grouped : [];
+        const nextFlashes = Array.isArray(data.flashes) ? data.flashes : [];
 
-    refreshInFlightRef.current = task;
+        _cachedFiles = nextFiles;
+        _cachedAllFlashes = nextFlashes;
+        savePersistedFiles(nextFiles);
+        savePersistedAllFlashes(nextFlashes);
+
+        setFiles(nextFiles);
+        setAllFlashes(nextFlashes);
+        setSelectedFile((prev) => {
+          if (!prev) {
+            return prev;
+          }
+
+          return nextFiles.find((file) => {
+            if (prev.fileId && file.fileId) {
+              return file.fileId === prev.fileId;
+            }
+            return file.id === prev.id;
+          }) ?? prev;
+        });
+      })
+      .catch(() => {
+        setFiles(_cachedFiles);
+        setAllFlashes(_cachedAllFlashes);
+        return { grouped: _cachedFiles, flashes: _cachedAllFlashes };
+      })
+      .finally(() => {
+        refreshInFlightRef.current = null;
+        setFilesLoading(false);
+        setAllFlashesLoading(false);
+      });
+
+    refreshInFlightRef.current = task.then(() => undefined);
     return task;
-  };
+  }, [showAllFlashes]);
 
-  const loadFileHistory = async (fileId: string) => {
-    setHistoryLoading(true);
-    try {
-      const entries = await fetchFlashHistory({ fileId, limit: 30 });
-      const nextEntries = attachCachedLogs(Array.isArray(entries) ? entries : []);
-      _cachedHistoryByFile.set(fileId, nextEntries);
-      setFileHistory(nextEntries);
-    } catch {
-      setFileHistory(attachCachedLogs(_cachedHistoryByFile.get(fileId) ?? []));
-    } finally {
-      setHistoryLoading(false);
+  useEffect(() => {
+    localStorage.setItem("libraryShowAllFlashes", String(showAllFlashes));
+  }, [showAllFlashes]);
+
+  const loadFileHistory = async (file: LibraryGroupedEntry) => {
+    const cacheKey = buildHistoryCacheKey(file);
+    const cachedEntries = _cachedHistoryByFile.get(cacheKey);
+    if (cachedEntries) {
+      setFileHistory(attachCachedLogs(cachedEntries));
+      return;
     }
+
+    const nextEntries = attachCachedLogs(visibleFlashes.filter((entry) => entryMatchesFile(entry, file)));
+    _cachedHistoryByFile.set(cacheKey, nextEntries);
+    setFileHistory(nextEntries);
   };
 
   useEffect(() => {
-    if (_cachedFiles.length > 0) {
-      setFiles(_cachedFiles);
-    } else {
-      void prefetchFiles().then((items) => setFiles(items));
-    }
+    void loadLibraryData();
 
     const poll = window.setInterval(() => {
-      void loadFiles(true);
-      if (_persistedFile) {
-        void loadFileHistory(_persistedFile.id);
-      }
+      void loadLibraryData();
     }, 3000);
 
     const unsub = subscribeToBroadcast(() => {
-      void loadFiles(true);
-      if (_persistedFile) {
-        void loadFileHistory(_persistedFile.id);
-      }
+      void loadLibraryData();
     });
 
     return () => {
       window.clearInterval(poll);
       unsub();
     };
-  }, []);
+  }, [loadLibraryData]);
 
   const refresh = () => {
-    void loadFiles(true);
-    if (selectedFile) {
-      void loadFileHistory(selectedFile.id);
-    }
+    void loadLibraryData();
   };
 
-  const openDrawer = (file: HexFile) => {
+  const openDrawer = (file: LibraryGroupedEntry, initialHistory?: FlashHistoryEntry[]) => {
     _persistedFile = file;
     _persistedNotes = file.notes ?? "";
     setSelectedFile(file);
     setDrawerNotes(file.notes ?? "");
-    setFileHistory(attachCachedLogs(_cachedHistoryByFile.get(file.id) ?? []));
-    void loadFileHistory(file.id);
+    const cacheKey = buildHistoryCacheKey(file);
+    if (initialHistory) {
+      const nextEntries = attachCachedLogs(initialHistory);
+      _cachedHistoryByFile.set(cacheKey, nextEntries);
+      setFileHistory(nextEntries);
+    } else {
+      setFileHistory(attachCachedLogs(_cachedHistoryByFile.get(cacheKey) ?? []));
+    }
+    void loadFileHistory(file);
   };
 
   const closeDrawer = () => {
@@ -396,13 +487,14 @@ export default function LibraryPage() {
   };
 
   const saveDrawerNotes = async () => {
-    if (!selectedFile) return;
+    if (!selectedFile?.fileId) return;
     setSavingNotes(true);
     try {
-      const updated = await updateHexFileNotes(selectedFile.id, drawerNotes);
+      const updated = await updateHexFileNotes(selectedFile.fileId, drawerNotes);
       _cachedFiles = _cachedFiles.map((file) =>
-        file.id === selectedFile.id ? { ...file, notes: updated.notes } : file
+        file.fileId === selectedFile.fileId ? { ...file, notes: updated.notes } : file
       );
+      savePersistedFiles(_cachedFiles);
       setFiles(_cachedFiles);
       setSelectedFile((prev) => (prev ? { ...prev, notes: updated.notes } : null));
     } catch {
@@ -412,13 +504,17 @@ export default function LibraryPage() {
     }
   };
 
-  const handleLoad = async (file: HexFile) => {
+  const handleLoad = async (file: LibraryGroupedEntry) => {
+    if (!file.fileId) {
+      return;
+    }
+
     setLoadingId(file.id);
     setLoadError(null);
     try {
       navigate("/", {
         state: {
-          hexFileId: file.id,
+          hexFileId: file.fileId,
           displayName: file.displayName || file.name,
           notes: file.notes || "",
         },
@@ -429,9 +525,13 @@ export default function LibraryPage() {
     }
   };
 
-  const handleDownload = (file: HexFile) => {
+  const handleDownload = (file: LibraryGroupedEntry) => {
+    if (!file.fileId) {
+      return;
+    }
+
     const a = document.createElement("a");
-    a.href = `/api/hex-files/${file.id}/content`;
+    a.href = `/api/hex-files/${file.fileId}/content`;
     a.download = file.displayName || file.name;
     document.body.appendChild(a);
     a.click();
@@ -529,8 +629,8 @@ export default function LibraryPage() {
             </div>
             <span className="text-xs text-theme-text-muted">
               {showAllFlashes 
-                ? `${sortedFlashes.length} flash${sortedFlashes.length !== 1 ? "es" : ""}`
-                : `${sortedFiles.length} file${sortedFiles.length !== 1 ? "s" : ""}`
+                ? `${renderedFlashes.length} flash${renderedFlashes.length !== 1 ? "es" : ""}`
+                : `${renderedFiles.length} file${renderedFiles.length !== 1 ? "s" : ""}`
               }
             </span>
           </div>
@@ -541,31 +641,27 @@ export default function LibraryPage() {
             </div>
           )}
 
-          <div className="flex-1 min-h-0 overflow-y-auto [content-visibility:auto]">
-            {(!showAllFlashes && sortedFiles.length === 0) || (showAllFlashes && sortedFlashes.length === 0) ? (
-              <div className="h-full flex flex-col items-center justify-center gap-2">
-                <svg className="w-10 h-10 text-theme-text-muted opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                </svg>
-                <p className="text-sm text-theme-text-muted">No hex files uploaded yet</p>
-              </div>
-            ) : (
-              <table className="w-full text-sm border-collapse">
-                <thead>
-                  <tr className="border-b border-theme-border">
-                    <th className="px-6 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">FILE</th>
-                    {!showAllFlashes && <th className="px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">SIZE</th>}
-                    {!showAllFlashes && <th className="px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">UPLOADED</th>}
-                    {showAllFlashes && <th className="px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">FLASHED BY</th>}
-                    {showAllFlashes && <th className="px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">FLASHED AT</th>}
-                    {!showAllFlashes && <th className="px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">LAST FLASHED</th>}
-                    <th className="px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">STATUS</th>
-                    <th className="px-6 py-3"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {showAllFlashes ? sortedFlashes.map((entry, i) => {
-                    const isLatest = entry.id === latestFlashId;
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <table className="w-full table-fixed text-sm border-collapse">
+              <thead>
+                <tr className="border-b border-theme-border">
+                  <th className="w-[30%] px-6 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">FILE</th>
+                  <th className="w-[14%] px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">
+                    {showAllFlashes ? "FLASHED BY" : "SIZE"}
+                  </th>
+                  <th className="w-[15%] px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">
+                    {showAllFlashes ? "FLASHED AT" : "UPLOADED"}
+                  </th>
+                  <th className="w-[15%] px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">
+                    {showAllFlashes ? <span className="invisible">LAST FLASHED</span> : "LAST FLASHED"}
+                  </th>
+                  <th className="w-[14%] px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">STATUS</th>
+                  <th className="w-[12%] px-6 py-3" />
+                </tr>
+              </thead>
+              <tbody>
+                  {showAllFlashes ? renderedFlashes.length > 0 ? renderedFlashes.map((entry, i) => {
+                    const isLatest = entry.id === latestRenderedFlashId;
                     return (
                     <tr
                       key={entry.id}
@@ -587,15 +683,22 @@ export default function LibraryPage() {
                             <button
                                className="font-semibold text-theme-text hover:underline underline-offset-2 truncate max-w-[240px] text-left block"
                                onClick={() => {
-                                 const f = files.find(fileItem => fileItem.id === entry.fileId);
-                                 if (f) {
-                                   setSelectedFile(f);
-                                   setDrawerNotes(f.notes || "");
-                                   setFileHistory([entry]);
-                                   setHistoryLoading(false);
-                                   loadLogs(entry.id);
-                                 }
-                               }}
+                                  const f = files.find((fileItem) => entryMatchesFile(entry, fileItem)) ?? {
+                                    id: `history:${normalizeLibraryName(entry.name) || entry.id}`,
+                                    fileId: entry.fileId ?? null,
+                                    name: entry.name,
+                                    displayName: entry.name,
+                                    size: null,
+                                    uploadedAt: entry.timestamp,
+                                  lastFlashedAt: entry.timestamp,
+                                  lastFlashedBy: entry.operator,
+                                  status: entry.status,
+                                  notes: entry.notes,
+                                  hasPayload: Boolean(entry.fileId),
+                                  };
+                                  openDrawer(f, [entry]);
+                                  void loadLogs(entry.id);
+                                }}
                             >
                               {entry.name}
                             </button>
@@ -610,6 +713,9 @@ export default function LibraryPage() {
                       >
                         {formatDateTime(entry.timestamp)}
                       </td>
+                      <td className="px-4 py-4 text-sm text-transparent whitespace-nowrap select-none" aria-hidden="true">
+                        &nbsp;
+                      </td>
                       <td className="px-4 py-4">
                         <StatusPill status={entry.status} size="sm" />
                       </td>
@@ -619,7 +725,7 @@ export default function LibraryPage() {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  const f = files.find(fileItem => fileItem.id === entry.fileId);
+                                  const f = files.find((fileItem) => fileItem.fileId === entry.fileId);
                                   if (f) handleDownload(f);
                                 }}
                                 className="p-1.5 hover:text-theme-text hover:bg-theme-bg/50 rounded transition-colors text-theme-text-muted"
@@ -633,7 +739,7 @@ export default function LibraryPage() {
                                 variant="secondary"
                                 className="px-3 py-1 text-xs font-semibold"
                                 onClick={() => {
-                                  const f = files.find(fileItem => fileItem.id === entry.fileId);
+                                  const f = files.find((fileItem) => fileItem.fileId === entry.fileId);
                                   if (f) handleLoad(f);
                                 }}
                                 disabled={loadingId !== null}
@@ -645,7 +751,13 @@ export default function LibraryPage() {
                       </td>
                     </tr>
                     );
-                  }) : sortedFiles.map((file, i) => {
+                  }) : (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-10 text-center text-sm text-theme-text-muted">
+                        {allFlashesLoading ? "" : "No flashes found yet."}
+                      </td>
+                    </tr>
+                  ) : renderedFiles.length > 0 ? renderedFiles.map((file, i) => {
                     const isLatest = file.id === latestFlashedFileId;
                     return (
                     <tr
@@ -691,33 +803,40 @@ export default function LibraryPage() {
                         <StatusPill status={file.status} size="sm" />
                       </td>
                       <td className="px-6 py-4">
-                        <div className="flex items-center gap-2 justify-end">
-                          <button
-                            onClick={() => handleDownload(file)}
-                            className="p-1.5 text-theme-text-muted hover:text-theme-text border border-theme-border rounded hover:bg-theme-bg transition-colors"
-                            title="Download .hex"
-                          >
-                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                            </svg>
-                          </button>
-                          <Button
-                            variant="secondary"
-                            className="px-3 py-1 text-xs font-semibold"
-                            onClick={() => handleLoad(file)}
-                            isLoading={loadingId === file.id}
-                            disabled={loadingId !== null}
-                          >
-                            Load
-                          </Button>
-                        </div>
+                        {file.hasPayload ? (
+                          <div className="flex items-center gap-2 justify-end">
+                            <button
+                              onClick={() => handleDownload(file)}
+                              className="p-1.5 text-theme-text-muted hover:text-theme-text border border-theme-border rounded hover:bg-theme-bg transition-colors"
+                              title="Download .hex"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                              </svg>
+                            </button>
+                            <Button
+                              variant="secondary"
+                              className="px-3 py-1 text-xs font-semibold"
+                              onClick={() => handleLoad(file)}
+                              isLoading={loadingId === file.id}
+                              disabled={loadingId !== null}
+                            >
+                              Load
+                            </Button>
+                          </div>
+                        ) : null}
                       </td>
                     </tr>
                     );
-                  })}
+                  }) : (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-10 text-center text-sm text-theme-text-muted">
+                        {filesLoading ? "" : "No HEX files found yet."}
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
-            )}
           </div>
         </Panel>
       </div>
@@ -739,7 +858,7 @@ export default function LibraryPage() {
                 )}
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="text-xs text-theme-text-muted shrink-0">ID</span>
-                  <span className="text-xs font-mono text-theme-text-muted">{selectedFile.id}</span>
+                  <span className="text-xs font-mono text-theme-text-muted">{selectedFile.fileId || selectedFile.id}</span>
                 </div>
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="text-xs text-theme-text-muted shrink-0">Size</span>
@@ -765,35 +884,38 @@ export default function LibraryPage() {
                 )}
               </div>
 
-              <div className="border-t border-theme-border" />
+              {selectedFile.hasPayload && (
+                <>
+                  <div className="border-t border-theme-border" />
 
-              <div className="flex flex-col gap-2">
-                <label htmlFor="drawer-notes" className="text-xs font-bold text-theme-text-muted tracking-wider">FILE NOTES</label>
-                <textarea
-                  id="drawer-notes"
-                  ref={drawerNotesRef}
-                  value={drawerNotes}
-                  onChange={(e) => setDrawerNotes(e.target.value)}
-                  rows={3}
-                  className="w-full bg-theme-bg border border-theme-border text-theme-text text-sm px-3 py-2 rounded resize-none focus:outline-none focus:ring-1 focus:ring-theme-primary placeholder:text-theme-text-muted placeholder:opacity-40"
-                  placeholder="Add notes..."
-                />
-                <Button
-                  variant="secondary"
-                  className="self-end px-3 py-1 text-xs font-semibold"
-                  onClick={saveDrawerNotes}
-                  isLoading={savingNotes}
-                >
-                  Save
-                </Button>
-              </div>
+                  <div className="flex flex-col gap-2">
+                    <label htmlFor="drawer-notes" className="text-xs font-bold text-theme-text-muted tracking-wider">FILE NOTES</label>
+                    <textarea
+                      id="drawer-notes"
+                      ref={drawerNotesRef}
+                      value={drawerNotes}
+                      onChange={(e) => setDrawerNotes(e.target.value)}
+                      rows={3}
+                      className="w-full bg-theme-bg border border-theme-border text-theme-text text-sm px-3 py-2 rounded resize-none focus:outline-none focus:ring-1 focus:ring-theme-primary placeholder:text-theme-text-muted placeholder:opacity-40"
+                      placeholder="Add notes..."
+                    />
+                    <Button
+                      variant="secondary"
+                      className="self-end px-3 py-1 text-xs font-semibold"
+                      onClick={saveDrawerNotes}
+                      isLoading={savingNotes}
+                    >
+                      Save
+                    </Button>
+                  </div>
 
-              <div className="border-t border-theme-border" />
+                  <div className="border-t border-theme-border" />
+                </>
+              )}
 
               <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs font-bold text-theme-text-muted tracking-wider">FLASH LOG</p>
-                  {historyLoading && <span className="text-[11px] text-theme-text-muted">Refreshing...</span>}
                 </div>
                 {fileHistory.length === 0 ? (
                   <div className="rounded border border-theme-border bg-theme-bg px-3 py-2 text-xs text-theme-text-muted">
@@ -848,27 +970,29 @@ export default function LibraryPage() {
 
               <div className="border-t border-theme-border" />
 
-              <div className="flex items-center gap-3">
-                <Button
-                  variant="primary"
-                  className="flex-1 text-xs font-semibold"
-                  onClick={() => handleLoad(selectedFile)}
-                  isLoading={loadingId === selectedFile.id}
-                  disabled={loadingId !== null}
-                >
-                  Load into Flash
-                </Button>
-                <button
-                  onClick={() => handleDownload(selectedFile)}
-                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-theme-text-muted hover:text-theme-text border border-theme-border rounded hover:bg-theme-bg transition-colors"
-                  title="Download .hex"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                  </svg>
-                  Download
-                </button>
-              </div>
+              {selectedFile.hasPayload ? (
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="primary"
+                    className="flex-1 text-xs font-semibold"
+                    onClick={() => handleLoad(selectedFile)}
+                    isLoading={loadingId === selectedFile.id}
+                    disabled={loadingId !== null}
+                  >
+                    Load into Flash
+                  </Button>
+                  <button
+                    onClick={() => handleDownload(selectedFile)}
+                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-theme-text-muted hover:text-theme-text border border-theme-border rounded hover:bg-theme-bg transition-colors"
+                    title="Download .hex"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                    </svg>
+                    Download
+                  </button>
+                </div>
+              ) : null}
             </div>
           )}
         </DetailDrawer>

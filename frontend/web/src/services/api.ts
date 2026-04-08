@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import { FlashHistoryEntry, HexFile, VcuState } from "../types";
+import { FlashHistoryEntry, HexFile, LibrarySnapshot, VcuState } from "../types";
 
 const BASE = "/api";
 
@@ -25,6 +25,12 @@ export const fetchFlashHistory = (options: FetchFlashHistoryOptions = {}): Promi
   if (options.limit) params.set("limit", String(options.limit));
   const query = params.toString();
   return apiFetch(`/flash-history${query ? `?${query}` : ""}`);
+};
+
+export const fetchLibrarySnapshot = (limit = 250): Promise<LibrarySnapshot> => {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  return apiFetch(`/library?${params.toString()}`);
 };
 
 export const fetchVcuState = (): Promise<{ state: VcuState; powerCycle?: boolean; imdWaiting?: boolean }> =>

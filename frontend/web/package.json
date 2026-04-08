@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"vite\" \"..\\..\\.venv\\Scripts\\python.exe ..\\app.py\"",
+    "dev": "concurrently \"vite\" \"set PYTHONPATH=..\\..&& ..\\..\\.venv\\Scripts\\python.exe -m frontend.app\"",
     "build": "vite build",
     "preview": "vite preview"
   },

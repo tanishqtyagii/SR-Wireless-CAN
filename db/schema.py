@@ -124,6 +124,7 @@ def _history_row(row: sqlite3.Row, *, include_logs: bool = True) -> dict:
         "timestamp": row["timestamp"],
         "status":    row["status"],
         "notes":     row["notes"],
+        "action":    row["action"],
         "operator":  row["operator"],
         "logs":      logs,
     }

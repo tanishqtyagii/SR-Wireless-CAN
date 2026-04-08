@@ -21,11 +21,7 @@ const HISTORY_LIMIT = 120;
 const LOGS_MAX_LINES = 1200;
 
 function loadPersistedHistory(): FlashHistoryEntry[] {
-  try {
-    return JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY) ?? "[]");
-  } catch {
-    return [];
-  }
+  return [];
 }
 
 function savePersistedHistory(items: FlashHistoryEntry[]): void {

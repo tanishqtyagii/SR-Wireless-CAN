@@ -189,6 +189,83 @@ def _load_hex_lenient(path: str) -> IntelHex:
         return ih
 
 
+def _library_group_name(value: str | None) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip()).lower()
+
+
+def _build_library_snapshot(limit: int = 250) -> dict:
+    files = db.list_hex_files()
+    flashes = db.list_flash_history(limit=limit, include_logs=False)
+
+    groups: dict[str, dict] = {}
+    name_to_key: dict[str, str] = {}
+
+    for file in files:
+        display_name = file.get("displayName") or file["name"]
+        key = f"file:{file['id']}"
+        groups[key] = {
+            "id": key,
+            "fileId": file["id"],
+            "name": file["name"],
+            "displayName": display_name,
+            "size": file.get("size"),
+            "uploadedAt": file.get("uploadedAt"),
+            "lastFlashedAt": file.get("lastFlashedAt"),
+            "lastFlashedBy": file.get("lastFlashedBy"),
+            "status": file.get("status", "pending"),
+            "notes": file.get("notes"),
+            "hasPayload": True,
+        }
+        name_to_key[_library_group_name(display_name)] = key
+
+    for entry in flashes:
+        if entry.get("action") == "bootload":
+            continue
+
+        entry_name = (entry.get("name") or "").strip() or "Unknown"
+        normalized_name = _library_group_name(entry_name)
+        explicit_key = f"file:{entry['fileId']}" if entry.get("fileId") else None
+        key = explicit_key if explicit_key and explicit_key in groups else name_to_key.get(normalized_name)
+
+        if not key:
+            key = f"history:{normalized_name or entry['id']}"
+            groups[key] = {
+                "id": key,
+                "fileId": None,
+                "name": entry_name,
+                "displayName": entry_name,
+                "size": None,
+                "uploadedAt": entry.get("timestamp"),
+                "lastFlashedAt": entry.get("timestamp"),
+                "lastFlashedBy": entry.get("operator"),
+                "status": entry.get("status", "unknown"),
+                "notes": entry.get("notes"),
+                "hasPayload": False,
+            }
+            if normalized_name:
+                name_to_key[normalized_name] = key
+
+        group = groups[key]
+        timestamp = entry.get("timestamp")
+
+        if timestamp and (not group.get("uploadedAt") or timestamp < group["uploadedAt"]):
+            group["uploadedAt"] = timestamp
+
+        if timestamp and (not group.get("lastFlashedAt") or timestamp >= group["lastFlashedAt"]):
+            group["lastFlashedAt"] = timestamp
+            group["lastFlashedBy"] = entry.get("operator")
+            group["status"] = entry.get("status", group.get("status", "unknown"))
+            if entry.get("notes"):
+                group["notes"] = entry["notes"]
+        elif not group.get("notes") and entry.get("notes"):
+            group["notes"] = entry["notes"]
+
+    return {
+        "grouped": list(groups.values()),
+        "flashes": flashes,
+    }
+
+
 # ── Background flash threads ──────────────────────────────────────────────────
 
 def _run_boot_and_flash(file_id: str, display_name: str, history_id: str) -> None:
@@ -415,6 +492,12 @@ def get_hex_content(file_id: str):
     base_name = os.path.basename(base_name).replace("\\", "_").replace("/", "_")
     filename = f"{base_name}.hex"
     return send_file(path, as_attachment=True, download_name=filename)
+
+
+@app.get("/api/library")
+def library_snapshot():
+    limit = request.args.get("limit", type=int) or 250
+    return jsonify(_build_library_snapshot(limit=limit))
 
 
 @app.patch("/api/hex-files/<file_id>/notes")

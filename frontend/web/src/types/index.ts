@@ -20,6 +20,26 @@ export interface FlashHistoryEntry {
   timestamp: string;
   status: FlashStatus;
   notes?: string;
+  action?: "bootload" | "boot_and_flash" | "flash_only";
   operator?: string;
   logs?: string[];
+}
+
+export interface LibraryGroupedEntry {
+  id: string;
+  fileId?: string | null;
+  name: string;
+  displayName?: string;
+  size?: number | null;
+  uploadedAt?: string;
+  lastFlashedAt?: string;
+  lastFlashedBy?: string;
+  status: FlashStatus | "pending";
+  notes?: string;
+  hasPayload: boolean;
+}
+
+export interface LibrarySnapshot {
+  grouped: LibraryGroupedEntry[];
+  flashes: FlashHistoryEntry[];
 }

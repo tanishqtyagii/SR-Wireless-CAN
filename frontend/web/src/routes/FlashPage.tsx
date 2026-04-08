@@ -1,4 +1,4 @@
-import { DragEvent, Suspense, lazy, useEffect, useReducer, useRef, useState } from "react";
+import { DragEvent, Suspense, lazy, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useVcuApp } from "../hooks/useVcuApp";
 import { clearAllData, fetchFlashLogs, getStoredHexFile } from "../services/api";
@@ -219,6 +219,18 @@ export default function FlashPage() {
   const { file, displayName, notes, storedFileId } = fileState;
   const { dragError, isDragReplace, replaceNotice } = dragState;
   const canFlash = !!file && !isBusy && !vcuIsBusy;
+  const flashedHistory = useMemo<FlashHistoryEntry[]>(
+    () => history.filter((entry): entry is FlashHistoryEntry => {
+      if (entry.action) {
+        return entry.action !== "bootload";
+      }
+      if (entry.fileId) {
+        return true;
+      }
+      return entry.name.trim().toLowerCase() !== "bootload";
+    }),
+    [history]
+  );
 
   return (
     <div className="min-h-screen bg-theme-bg text-theme-text font-sans flex flex-col p-4 gap-4 h-screen overflow-hidden">
@@ -333,6 +345,8 @@ export default function FlashPage() {
               await clearAllData();
               localStorage.removeItem("sr_flash_logs");
               localStorage.removeItem("sr_flash_history");
+              localStorage.removeItem("sr_library_grouped_entries_v2");
+              localStorage.removeItem("sr_library_all_flashes_v2");
               clearFile();
               window.location.reload();
             }}
@@ -487,13 +501,17 @@ export default function FlashPage() {
                 </div>
               )}
               <ul className="divide-y divide-theme-border">
-                {history.filter(e => e.fileId).map(entry => (
+                {flashedHistory.map((entry) => (
                   <li 
                     key={entry.id} 
-                    draggable
-                    onDragStart={(event) => startHistoryDrag(event, entry)}
-                    className="p-3 hover:bg-theme-panel-hover cursor-grab active:cursor-grabbing flex justify-between items-start"
-                    title="Drag into upload area"
+                    draggable={Boolean(entry.fileId)}
+                    onDragStart={(event) => {
+                      if (entry.fileId) startHistoryDrag(event, entry);
+                    }}
+                    className={`p-3 hover:bg-theme-panel-hover flex justify-between items-start ${
+                      entry.fileId ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
+                    }`}
+                    title={entry.fileId ? "Drag into upload area" : "No stored HEX payload available"}
                     role="button"
                     tabIndex={0}
                     onClick={() => {
@@ -517,7 +535,7 @@ export default function FlashPage() {
                     <StatusPill status={entry.status} size="sm" className="shrink-0" />
                   </li>
                 ))}
-                {history.filter(e => e.fileId).length === 0 && (
+                {flashedHistory.length === 0 && (
                   <div className="p-6 text-center text-sm text-theme-text-muted">No flash history.</div>
                 )}
               </ul>
