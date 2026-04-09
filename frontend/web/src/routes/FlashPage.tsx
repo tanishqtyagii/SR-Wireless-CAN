@@ -1,7 +1,8 @@
 import { DragEvent, Suspense, lazy, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useVcuApp } from "../hooks/useVcuApp";
-import { clearAllData, fetchFlashLogs, getStoredHexFile } from "../services/api";
+import { clearAllData, getStoredHexFile } from "../services/api";
+import { getCachedFlashLogs } from "../services/flashLogCache";
 import { Button } from "../components/ui/Button";
 import { Dropzone } from "../components/ui/Dropzone";
 import { StatusPill } from "../components/ui/StatusPill";
@@ -105,7 +106,6 @@ export default function FlashPage() {
   );
   const [logOpen, setLogOpen] = useState(false);
   const [drawerItem, setDrawerItem] = useState<FlashHistoryEntry | null>(null);
-  const [drawerLogs, setDrawerLogs] = useState<string[] | undefined>(undefined);
   const replaceNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
@@ -114,26 +114,6 @@ export default function FlashPage() {
   useEffect(() => {
     if (vcuState === "bootloading" || vcuState === "flashing") setLogOpen(true);
   }, [vcuState]);
-
-  useEffect(() => {
-    if (!drawerItem) {
-      setDrawerLogs(undefined);
-      return;
-    }
-
-    let cancelled = false;
-    fetchFlashLogs(drawerItem.id)
-      .then((data) => {
-        if (!cancelled) setDrawerLogs(data.logs ?? []);
-      })
-      .catch(() => {
-        if (!cancelled) setDrawerLogs([]);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [drawerItem]);
 
   // Auto-load file navigated from Library page — single dispatch replaces 4 setStates
   useEffect(() => {
@@ -163,14 +143,15 @@ export default function FlashPage() {
     replaceNoticeTimer.current = setTimeout(() => dispatchDrag({ type: "CLEAR_NOTICE" }), 3000);
   };
 
-  const onAction = async (actionFn: (fd: FormData) => Promise<void>) => {
+  const onAction = async (actionFn: (fd: FormData, operationLabel?: string) => Promise<void>) => {
     if (!fileState.file) return;
     const formData = new FormData();
+    const operationLabel = fileState.displayName || fileState.file.name;
     formData.append("file", fileState.file);
-    formData.append("displayName", fileState.displayName || fileState.file.name);
+    formData.append("displayName", operationLabel);
     formData.append("notes", fileState.notes);
     formData.append("operator", operatorName);
-    await actionFn(formData);
+    await actionFn(formData, operationLabel);
     clearFile();
   };
 
@@ -232,8 +213,13 @@ export default function FlashPage() {
     [history]
   );
 
+  const openFlashDrawer = (entry: FlashHistoryEntry) => {
+    const cachedLogs = entry.logs ?? getCachedFlashLogs(entry.id);
+    setDrawerItem(cachedLogs !== undefined ? { ...entry, logs: cachedLogs } : entry);
+  };
+
   return (
-    <div className="min-h-screen bg-theme-bg text-theme-text font-sans flex flex-col p-4 gap-4 h-screen overflow-hidden">
+    <div className="min-h-screen bg-theme-bg text-theme-text font-sans flex flex-col p-3 sm:p-4 gap-3 sm:gap-4 h-screen overflow-hidden">
       {/* Power-cycle banner */}
       {powerCycleNeeded && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-3 px-5 py-3 rounded-lg border border-red-500 bg-theme-bg shadow-lg">
@@ -278,13 +264,13 @@ export default function FlashPage() {
       )}
       
       {/* Header Row */}
-      <header className="flex justify-between items-center shrink-0">
-        <div className="flex items-center gap-4">
-          <img src="/branding/spartan-logo.png" alt="Spartan Racing" className="h-10 w-auto object-contain" />
+      <header className="flex flex-wrap justify-between items-center gap-2 shrink-0">
+        <div className="flex items-center gap-3 sm:gap-4">
+          <img src="/branding/spartan-logo.png" alt="Spartan Racing" className="h-8 sm:h-10 w-auto object-contain" />
           <nav className="flex items-center gap-1 h-8 border border-theme-border bg-theme-panel rounded-full p-0.5">
             <button
               onClick={() => navigate("/")}
-              className={`px-4 h-full flex items-center justify-center text-[11px] font-bold tracking-widest rounded-full transition-colors ${
+              className={`px-3 sm:px-4 h-full flex items-center justify-center text-[11px] font-bold tracking-widest rounded-full transition-colors ${
                 location.pathname === "/"
                   ? "bg-theme-text text-theme-bg shadow-sm"
                   : "text-theme-text-muted hover:text-theme-text"
@@ -294,7 +280,7 @@ export default function FlashPage() {
             </button>
             <button
               onClick={() => navigate("/library")}
-              className={`px-4 h-full flex items-center justify-center text-[11px] font-bold tracking-widest rounded-full transition-colors ${
+              className={`px-3 sm:px-4 h-full flex items-center justify-center text-[11px] font-bold tracking-widest rounded-full transition-colors ${
                 location.pathname === "/library"
                   ? "bg-theme-text text-theme-bg shadow-sm"
                   : "text-theme-text-muted hover:text-theme-text"
@@ -304,7 +290,7 @@ export default function FlashPage() {
             </button>
           </nav>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
           {operatorName && (
             <button
               onClick={() => {
@@ -359,7 +345,7 @@ export default function FlashPage() {
       </header>
 
       {/* Body Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 flex-1 min-h-0 w-full">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4 flex-1 min-h-0 w-full">
         <div className="lg:col-span-9 flex flex-col min-h-0">
           <Panel className="flex-1 min-h-0 bg-theme-panel border border-theme-border shadow-sm flex flex-col">
             {/* File / dropzone area */}
@@ -514,14 +500,10 @@ export default function FlashPage() {
                     title={entry.fileId ? "Drag into upload area" : "No stored HEX payload available"}
                     role="button"
                     tabIndex={0}
-                    onClick={() => {
-                      setDrawerLogs(undefined);
-                      setDrawerItem(entry);
-                    }}
+                    onClick={() => openFlashDrawer(entry)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
-                        setDrawerLogs(undefined);
-                        setDrawerItem(entry);
+                        openFlashDrawer(entry);
                       }
                     }}
                   >
@@ -554,12 +536,12 @@ export default function FlashPage() {
           vcuState={vcuState}
         />
         <FlashDrawer
-          item={drawerItem ? { ...drawerItem, logs: drawerLogs } : null}
+          item={drawerItem}
           onClose={() => {
-            setDrawerLogs(undefined);
             setDrawerItem(null);
           }}
           onSaveNotes={handleUpdateHistoryNotes}
+          onLoadFile={(fileId) => void onStoredFileDrop(fileId)}
         />
       </Suspense>
     </div>

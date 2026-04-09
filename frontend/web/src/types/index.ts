@@ -25,17 +25,31 @@ export interface FlashHistoryEntry {
   logs?: string[];
 }
 
+export interface LibraryFileVariant {
+  fileId: string;
+  name: string;
+  displayName?: string;
+  notes?: string;
+  uploadedAt?: string;
+  lastFlashedAt?: string;
+  lastFlashedBy?: string;
+  status: FlashStatus | "pending";
+}
+
 export interface LibraryGroupedEntry {
   id: string;
   fileId?: string | null;
+  fileIds?: string[];
   name: string;
   displayName?: string;
+  aliasNames?: string[];
   size?: number | null;
   uploadedAt?: string;
   lastFlashedAt?: string;
   lastFlashedBy?: string;
   status: FlashStatus | "pending";
   notes?: string;
+  fileVariants?: LibraryFileVariant[];
   hasPayload: boolean;
 }
 

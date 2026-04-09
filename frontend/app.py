@@ -5,6 +5,7 @@ import threading
 import time
 import ast
 import io
+import hashlib
 from datetime import datetime, timezone
 
 
@@ -193,30 +194,98 @@ def _library_group_name(value: str | None) -> str:
     return re.sub(r"\s+", " ", (value or "").strip()).lower()
 
 
+def _hex_fingerprint(file_id: str) -> str | None:
+    path = _hex_path(file_id)
+    if not os.path.isfile(path):
+        return None
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _build_library_snapshot(limit: int = 250) -> dict:
     files = db.list_hex_files()
     flashes = db.list_flash_history(limit=limit, include_logs=False)
 
     groups: dict[str, dict] = {}
     name_to_key: dict[str, str] = {}
+    file_id_to_key: dict[str, str] = {}
 
     for file in files:
         display_name = file.get("displayName") or file["name"]
-        key = f"file:{file['id']}"
-        groups[key] = {
-            "id": key,
-            "fileId": file["id"],
-            "name": file["name"],
-            "displayName": display_name,
-            "size": file.get("size"),
-            "uploadedAt": file.get("uploadedAt"),
-            "lastFlashedAt": file.get("lastFlashedAt"),
-            "lastFlashedBy": file.get("lastFlashedBy"),
-            "status": file.get("status", "pending"),
-            "notes": file.get("notes"),
-            "hasPayload": True,
-        }
-        name_to_key[_library_group_name(display_name)] = key
+        fingerprint = _hex_fingerprint(file["id"])
+        key = f"content:{fingerprint}" if fingerprint else f"file:{file['id']}"
+        existing = groups.get(key)
+
+        if not existing:
+            groups[key] = {
+                "id": key,
+                "fileId": file["id"],
+                "fileIds": [file["id"]],
+                "name": file["name"],
+                "displayName": display_name,
+                "aliasNames": [display_name],
+                "size": file.get("size"),
+                "uploadedAt": file.get("uploadedAt"),
+                "lastFlashedAt": file.get("lastFlashedAt"),
+                "lastFlashedBy": file.get("lastFlashedBy"),
+                "status": file.get("status", "pending"),
+                "notes": file.get("notes"),
+                "hasPayload": True,
+                "fileVariants": [{
+                    "fileId": file["id"],
+                    "name": file["name"],
+                    "displayName": display_name,
+                    "notes": file.get("notes"),
+                    "uploadedAt": file.get("uploadedAt"),
+                    "lastFlashedAt": file.get("lastFlashedAt"),
+                    "lastFlashedBy": file.get("lastFlashedBy"),
+                    "status": file.get("status", "pending"),
+                }],
+            }
+        else:
+            if file["id"] not in existing["fileIds"]:
+                existing["fileIds"].append(file["id"])
+            if display_name not in existing["aliasNames"]:
+                existing["aliasNames"].append(display_name)
+            if not any(variant["fileId"] == file["id"] for variant in existing["fileVariants"]):
+                existing["fileVariants"].append({
+                    "fileId": file["id"],
+                    "name": file["name"],
+                    "displayName": display_name,
+                    "notes": file.get("notes"),
+                    "uploadedAt": file.get("uploadedAt"),
+                    "lastFlashedAt": file.get("lastFlashedAt"),
+                    "lastFlashedBy": file.get("lastFlashedBy"),
+                    "status": file.get("status", "pending"),
+                })
+
+            uploaded_at = file.get("uploadedAt")
+            current_uploaded_at = existing.get("uploadedAt")
+            if uploaded_at and (not current_uploaded_at or uploaded_at >= current_uploaded_at):
+                existing["fileId"] = file["id"]
+                existing["name"] = file["name"]
+                existing["displayName"] = display_name
+                existing["size"] = file.get("size")
+                existing["uploadedAt"] = uploaded_at
+                if file.get("notes"):
+                    existing["notes"] = file.get("notes")
+
+            last_flashed_at = file.get("lastFlashedAt")
+            current_last_flashed_at = existing.get("lastFlashedAt")
+            if last_flashed_at and (not current_last_flashed_at or last_flashed_at >= current_last_flashed_at):
+                existing["lastFlashedAt"] = last_flashed_at
+                existing["lastFlashedBy"] = file.get("lastFlashedBy")
+                existing["status"] = file.get("status", existing.get("status", "pending"))
+
+        file_id_to_key[file["id"]] = key
+        name_to_key.setdefault(_library_group_name(display_name), key)
 
     for entry in flashes:
         if entry.get("action") == "bootload":
@@ -224,16 +293,18 @@ def _build_library_snapshot(limit: int = 250) -> dict:
 
         entry_name = (entry.get("name") or "").strip() or "Unknown"
         normalized_name = _library_group_name(entry_name)
-        explicit_key = f"file:{entry['fileId']}" if entry.get("fileId") else None
-        key = explicit_key if explicit_key and explicit_key in groups else name_to_key.get(normalized_name)
+        explicit_key = file_id_to_key.get(entry["fileId"]) if entry.get("fileId") else None
+        key = explicit_key or name_to_key.get(normalized_name)
 
         if not key:
             key = f"history:{normalized_name or entry['id']}"
             groups[key] = {
                 "id": key,
                 "fileId": None,
+                "fileIds": [],
                 "name": entry_name,
                 "displayName": entry_name,
+                "aliasNames": [entry_name],
                 "size": None,
                 "uploadedAt": entry.get("timestamp"),
                 "lastFlashedAt": entry.get("timestamp"),
@@ -241,11 +312,16 @@ def _build_library_snapshot(limit: int = 250) -> dict:
                 "status": entry.get("status", "unknown"),
                 "notes": entry.get("notes"),
                 "hasPayload": False,
+                "fileVariants": [],
             }
             if normalized_name:
                 name_to_key[normalized_name] = key
 
         group = groups[key]
+        if entry.get("fileId") and entry["fileId"] not in group["fileIds"]:
+            group["fileIds"].append(entry["fileId"])
+        if entry_name not in group["aliasNames"]:
+            group["aliasNames"].append(entry_name)
         timestamp = entry.get("timestamp")
 
         if timestamp and (not group.get("uploadedAt") or timestamp < group["uploadedAt"]):
@@ -259,6 +335,13 @@ def _build_library_snapshot(limit: int = 250) -> dict:
                 group["notes"] = entry["notes"]
         elif not group.get("notes") and entry.get("notes"):
             group["notes"] = entry["notes"]
+
+    for group in groups.values():
+        if group.get("fileVariants"):
+            group["fileVariants"].sort(
+                key=lambda variant: variant.get("uploadedAt") or "",
+                reverse=True,
+            )
 
     return {
         "grouped": list(groups.values()),

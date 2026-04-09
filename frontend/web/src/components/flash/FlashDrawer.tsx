@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { FlashHistoryEntry } from "../../types";
+import { Button } from "../ui/Button";
 import { DetailDrawer } from "../ui/DetailDrawer";
 import { StatusPill } from "../ui/StatusPill";
 import { InlineAlert } from "../ui/InlineAlert";
@@ -8,9 +9,10 @@ interface FlashDrawerProps {
   item: FlashHistoryEntry | null;
   onClose: () => void;
   onSaveNotes: (id: string, notes: string) => Promise<void>;
+  onLoadFile?: (fileId: string) => void;
 }
 
-export function FlashDrawer({ item, onClose, onSaveNotes }: FlashDrawerProps) {
+export function FlashDrawer({ item, onClose, onSaveNotes, onLoadFile }: FlashDrawerProps) {
   const [editingNotes, setEditingNotes] = useState(item?.notes ?? "");
   // Tracks the last successfully-saved value so the Save button disables after a save
   const [savedNotes, setSavedNotes] = useState(item?.notes ?? "");
@@ -53,7 +55,19 @@ export function FlashDrawer({ item, onClose, onSaveNotes }: FlashDrawerProps) {
               </div>
             )}
             {item.fileId && (
-              <div className="pt-2">
+              <div className="flex items-center flex-wrap gap-2 pt-2">
+                {onLoadFile && (
+                  <Button
+                    variant="primary"
+                    className="text-xs font-semibold px-3 py-1.5"
+                    onClick={() => {
+                      onLoadFile(item.fileId!);
+                      onClose();
+                    }}
+                  >
+                    Load into Flash
+                  </Button>
+                )}
                 <a
                   href={`/api/hex-files/${item.fileId}/content`}
                   download={item.name}
@@ -63,7 +77,7 @@ export function FlashDrawer({ item, onClose, onSaveNotes }: FlashDrawerProps) {
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
                   </svg>
-                  <span className="text-xs font-semibold">Download file</span>
+                  <span className="text-xs font-semibold">Download</span>
                 </a>
               </div>
             )}
