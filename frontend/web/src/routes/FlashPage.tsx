@@ -1,8 +1,7 @@
-import { DragEvent, Suspense, lazy, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { DragEvent, Suspense, lazy, useEffect, useReducer, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useVcuApp } from "../hooks/useVcuApp";
-import { clearAllData, getStoredHexFile } from "../services/api";
-import { getCachedFlashLogs } from "../services/flashLogCache";
+import { clearAllData, fetchFlashLogs, getStoredHexFile } from "../services/api";
 import { Button } from "../components/ui/Button";
 import { Dropzone } from "../components/ui/Dropzone";
 import { StatusPill } from "../components/ui/StatusPill";
@@ -106,6 +105,7 @@ export default function FlashPage() {
   );
   const [logOpen, setLogOpen] = useState(false);
   const [drawerItem, setDrawerItem] = useState<FlashHistoryEntry | null>(null);
+  const [drawerLogs, setDrawerLogs] = useState<string[] | undefined>(undefined);
   const replaceNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
@@ -114,6 +114,26 @@ export default function FlashPage() {
   useEffect(() => {
     if (vcuState === "bootloading" || vcuState === "flashing") setLogOpen(true);
   }, [vcuState]);
+
+  useEffect(() => {
+    if (!drawerItem) {
+      setDrawerLogs(undefined);
+      return;
+    }
+
+    let cancelled = false;
+    fetchFlashLogs(drawerItem.id)
+      .then((data) => {
+        if (!cancelled) setDrawerLogs(data.logs ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setDrawerLogs([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [drawerItem]);
 
   // Auto-load file navigated from Library page — single dispatch replaces 4 setStates
   useEffect(() => {
@@ -143,15 +163,14 @@ export default function FlashPage() {
     replaceNoticeTimer.current = setTimeout(() => dispatchDrag({ type: "CLEAR_NOTICE" }), 3000);
   };
 
-  const onAction = async (actionFn: (fd: FormData, operationLabel?: string) => Promise<void>) => {
+  const onAction = async (actionFn: (fd: FormData) => Promise<void>) => {
     if (!fileState.file) return;
     const formData = new FormData();
-    const operationLabel = fileState.displayName || fileState.file.name;
     formData.append("file", fileState.file);
-    formData.append("displayName", operationLabel);
+    formData.append("displayName", fileState.displayName || fileState.file.name);
     formData.append("notes", fileState.notes);
     formData.append("operator", operatorName);
-    await actionFn(formData, operationLabel);
+    await actionFn(formData);
     clearFile();
   };
 
@@ -200,26 +219,9 @@ export default function FlashPage() {
   const { file, displayName, notes, storedFileId } = fileState;
   const { dragError, isDragReplace, replaceNotice } = dragState;
   const canFlash = !!file && !isBusy && !vcuIsBusy;
-  const flashedHistory = useMemo<FlashHistoryEntry[]>(
-    () => history.filter((entry): entry is FlashHistoryEntry => {
-      if (entry.action) {
-        return entry.action !== "bootload";
-      }
-      if (entry.fileId) {
-        return true;
-      }
-      return entry.name.trim().toLowerCase() !== "bootload";
-    }),
-    [history]
-  );
-
-  const openFlashDrawer = (entry: FlashHistoryEntry) => {
-    const cachedLogs = entry.logs ?? getCachedFlashLogs(entry.id);
-    setDrawerItem(cachedLogs !== undefined ? { ...entry, logs: cachedLogs } : entry);
-  };
 
   return (
-    <div className="min-h-screen bg-theme-bg text-theme-text font-sans flex flex-col p-3 sm:p-4 gap-3 sm:gap-4 h-screen overflow-hidden">
+    <div className="min-h-screen bg-theme-bg text-theme-text font-sans flex flex-col p-4 gap-4 h-screen overflow-hidden">
       {/* Power-cycle banner */}
       {powerCycleNeeded && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-3 px-5 py-3 rounded-lg border border-red-500 bg-theme-bg shadow-lg">
@@ -264,15 +266,15 @@ export default function FlashPage() {
       )}
       
       {/* Header Row */}
-      <header className="flex flex-wrap justify-between items-center gap-2 shrink-0">
-        <div className="flex items-center gap-3 sm:gap-4">
-          <img src="/branding/spartan-logo.png" alt="Spartan Racing" className="h-8 sm:h-10 w-auto object-contain" />
-          <nav className="flex items-center gap-1 h-8 border border-theme-border bg-theme-panel rounded-full p-0.5">
+      <header className="flex justify-between items-center shrink-0">
+        <div className="flex items-center gap-4">
+          <img src="/branding/spartan-logo.png" alt="Spartan Racing" className="h-10 w-auto object-contain" />
+          <nav className="flex items-center gap-1 border border-theme-border bg-theme-panel rounded-full p-1">
             <button
               onClick={() => navigate("/")}
-              className={`px-3 sm:px-4 h-full flex items-center justify-center text-[11px] font-bold tracking-widest rounded-full transition-colors ${
+              className={`px-4 py-1 text-xs font-bold tracking-wide rounded-full transition-colors ${
                 location.pathname === "/"
-                  ? "bg-theme-text text-theme-bg shadow-sm"
+                  ? "bg-theme-text text-theme-bg"
                   : "text-theme-text-muted hover:text-theme-text"
               }`}
             >
@@ -280,9 +282,9 @@ export default function FlashPage() {
             </button>
             <button
               onClick={() => navigate("/library")}
-              className={`px-3 sm:px-4 h-full flex items-center justify-center text-[11px] font-bold tracking-widest rounded-full transition-colors ${
+              className={`px-4 py-1 text-xs font-bold tracking-wide rounded-full transition-colors ${
                 location.pathname === "/library"
-                  ? "bg-theme-text text-theme-bg shadow-sm"
+                  ? "bg-theme-text text-theme-bg"
                   : "text-theme-text-muted hover:text-theme-text"
               }`}
             >
@@ -290,7 +292,7 @@ export default function FlashPage() {
             </button>
           </nav>
         </div>
-        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+        <div className="flex items-center gap-3">
           {operatorName && (
             <button
               onClick={() => {
@@ -298,7 +300,7 @@ export default function FlashPage() {
                 setOperatorName("");
               }}
               title="Switch operator"
-              className="flex items-center gap-2 h-8 px-3 border border-theme-border bg-theme-panel hover:bg-theme-panel-hover rounded-full transition-colors shadow-sm"
+              className="flex items-center gap-2 border border-theme-border bg-theme-panel hover:bg-theme-panel-hover px-3 py-1.5 rounded-full transition-colors shadow-sm"
             >
               <span className="text-xs font-semibold text-theme-text">{operatorName}</span>
               <svg className="w-3 h-3 text-theme-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -307,13 +309,13 @@ export default function FlashPage() {
               </svg>
             </button>
           )}
-          <div className="flex items-center gap-3 h-8 px-3 border border-theme-border bg-theme-panel rounded-full shadow-sm">
+          <div className="flex items-center gap-3 border border-theme-border bg-theme-panel px-3 py-1.5 rounded-full shadow-sm">
             <span className="text-xs font-semibold text-theme-text-muted tracking-wide">CURRENT STATE</span>
             <StatusPill status={vcuState} className="!border-none !bg-transparent !p-0 !text-xs" />
           </div>
           <button
             onClick={() => setLogOpen(true)}
-            className="relative flex items-center gap-2 h-8 px-3 border border-theme-border bg-theme-panel hover:bg-theme-panel-hover rounded-full transition-colors shadow-sm"
+            className="relative flex items-center gap-2 border border-theme-border bg-theme-panel hover:bg-theme-panel-hover px-3 py-1.5 rounded-full transition-colors shadow-sm"
             title="View operation log"
           >
             {/* Terminal icon */}
@@ -331,12 +333,10 @@ export default function FlashPage() {
               await clearAllData();
               localStorage.removeItem("sr_flash_logs");
               localStorage.removeItem("sr_flash_history");
-              localStorage.removeItem("sr_library_grouped_entries_v2");
-              localStorage.removeItem("sr_library_all_flashes_v2");
               clearFile();
               window.location.reload();
             }}
-            className="h-8 px-3 flex items-center justify-center text-xs text-theme-text-muted hover:text-red-400 transition-colors border border-theme-border rounded-full bg-theme-panel shadow-sm hover:border-red-400/50"
+            className="text-xs text-theme-text-muted hover:text-red-400 transition-colors border border-theme-border px-2.5 py-1.5 rounded-full"
             title="Clear all local data"
           >
             Clear DB
@@ -345,7 +345,7 @@ export default function FlashPage() {
       </header>
 
       {/* Body Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4 flex-1 min-h-0 w-full">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 flex-1 min-h-0 w-full">
         <div className="lg:col-span-9 flex flex-col min-h-0">
           <Panel className="flex-1 min-h-0 bg-theme-panel border border-theme-border shadow-sm flex flex-col">
             {/* File / dropzone area */}
@@ -487,23 +487,23 @@ export default function FlashPage() {
                 </div>
               )}
               <ul className="divide-y divide-theme-border">
-                {flashedHistory.map((entry) => (
+                {history.filter(e => e.fileId).map(entry => (
                   <li 
                     key={entry.id} 
-                    draggable={Boolean(entry.fileId)}
-                    onDragStart={(event) => {
-                      if (entry.fileId) startHistoryDrag(event, entry);
-                    }}
-                    className={`p-3 hover:bg-theme-panel-hover flex justify-between items-start ${
-                      entry.fileId ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
-                    }`}
-                    title={entry.fileId ? "Drag into upload area" : "No stored HEX payload available"}
+                    draggable
+                    onDragStart={(event) => startHistoryDrag(event, entry)}
+                    className="p-3 hover:bg-theme-panel-hover cursor-grab active:cursor-grabbing flex justify-between items-start"
+                    title="Drag into upload area"
                     role="button"
                     tabIndex={0}
-                    onClick={() => openFlashDrawer(entry)}
+                    onClick={() => {
+                      setDrawerLogs(undefined);
+                      setDrawerItem(entry);
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
-                        openFlashDrawer(entry);
+                        setDrawerLogs(undefined);
+                        setDrawerItem(entry);
                       }
                     }}
                   >
@@ -517,7 +517,7 @@ export default function FlashPage() {
                     <StatusPill status={entry.status} size="sm" className="shrink-0" />
                   </li>
                 ))}
-                {flashedHistory.length === 0 && (
+                {history.filter(e => e.fileId).length === 0 && (
                   <div className="p-6 text-center text-sm text-theme-text-muted">No flash history.</div>
                 )}
               </ul>
@@ -536,12 +536,12 @@ export default function FlashPage() {
           vcuState={vcuState}
         />
         <FlashDrawer
-          item={drawerItem}
+          item={drawerItem ? { ...drawerItem, logs: drawerLogs } : null}
           onClose={() => {
+            setDrawerLogs(undefined);
             setDrawerItem(null);
           }}
           onSaveNotes={handleUpdateHistoryNotes}
-          onLoadFile={(fileId) => void onStoredFileDrop(fileId)}
         />
       </Suspense>
     </div>

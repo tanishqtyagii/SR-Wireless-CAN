@@ -1,0 +1,13 @@
+services:
+  vcu-backend:
+    environment:
+      FLASH_SIMULATE: "0"
+      FLASH_CAN_INTERFACE: "socketcan"
+      FLASH_CAN_CHANNEL: "can0"
+      FLASH_REQUIRE_IMD_CONFIRM: "0"
+      FLASH_DO_ERASE: "1"
+    network_mode: host
+    ports: []
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW

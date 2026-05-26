@@ -12,7 +12,6 @@ import {
   pruneOrphanedRecords,
   updateFlashHistoryNotes,
 } from "../services/api";
-import { hydrateFlashHistoryLogs, setCachedFlashLogs } from "../services/flashLogCache";
 import { subscribeToBroadcast } from "../services/ws";
 import { FlashHistoryEntry } from "../types";
 
@@ -77,7 +76,6 @@ export function useVcuApp() {
   const accumulatedLogsRef = useRef<string[]>(_persistedLogs);
   const lastOpLogCountRef = useRef(0);
   const activeHistoryIdRef = useRef<string | null>(null);
-  const activeOperationLabelRef = useRef<string>("");
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
 
   const refreshData = useCallback(() => {
@@ -88,12 +86,12 @@ export function useVcuApp() {
     const task = (async () => {
       try {
         const [historyItems, statePayload] = await Promise.all([
-          fetchFlashHistory({ limit: HISTORY_LIMIT, includeLogs: true }),
+          fetchFlashHistory({ limit: HISTORY_LIMIT }),
           fetchVcuState(),
         ]);
 
         setBackendDown(false);
-        const items = hydrateFlashHistoryLogs(Array.isArray(historyItems) ? historyItems : []);
+        const items = Array.isArray(historyItems) ? historyItems : [];
         _cachedHistory = items;
         savePersistedHistory(items);
         setHistory(items);
@@ -160,7 +158,7 @@ export function useVcuApp() {
     const nextLogs = savePersistedLogs([
       ...accumulatedLogsRef.current,
       "",
-      `${activeOperationLabelRef.current || "Operation started"}  ${ts} PST`,
+      `Operation ${activeHistoryId}  ${ts} PST`,
     ]);
     accumulatedLogsRef.current = nextLogs;
     _persistedLogs = nextLogs;
@@ -171,7 +169,6 @@ export function useVcuApp() {
       try {
         const data = await fetchFlashLogs(activeHistoryId);
         const allLines: string[] = data.logs ?? [];
-        setCachedFlashLogs(activeHistoryId, allLines);
         const newLines = allLines.slice(lastOpLogCountRef.current);
         if (newLines.length > 0) {
           const merged = savePersistedLogs([...accumulatedLogsRef.current, ...newLines]);
@@ -187,7 +184,6 @@ export function useVcuApp() {
             livePollRef.current = null;
           }
           activeHistoryIdRef.current = null;
-          activeOperationLabelRef.current = "";
           setActiveHistoryId(null);
           await refreshData();
         }
@@ -212,7 +208,7 @@ export function useVcuApp() {
     return unsub;
   }, [refreshData, setVcuState]);
 
-  const executeAction = useCallback(async (action: () => Promise<unknown>, operationLabel?: string) => {
+  const executeAction = useCallback(async (action: () => Promise<unknown>) => {
     const liveState = await fetchVcuState();
     if (liveState?.state === "flashing") {
       setErrorMessage("VCU is currently flashing. Wait for it to finish.");
@@ -227,12 +223,10 @@ export function useVcuApp() {
       const historyId = (result as { historyId?: string } | null)?.historyId;
       if (historyId) {
         activeHistoryIdRef.current = historyId;
-        activeOperationLabelRef.current = operationLabel?.trim() || "Operation started";
         setActiveHistoryId(historyId);
       }
       await refreshData();
     } catch (error: unknown) {
-      activeOperationLabelRef.current = "";
       const message = error instanceof Error ? error.message : "Action failed";
       setErrorMessage(message);
     } finally {
@@ -240,11 +234,9 @@ export function useVcuApp() {
     }
   }, [refreshData]);
 
-  const handleBoot = () => executeAction(() => bootloadOnly(), "Bootload");
-  const handleBootAndFlash = (formData: FormData, operationLabel?: string) =>
-    executeAction(() => bootAndFlash(formData), operationLabel);
-  const handleFlashOnly = (formData: FormData, operationLabel?: string) =>
-    executeAction(() => flashOnly(formData), operationLabel);
+  const handleBoot = () => executeAction(() => bootloadOnly());
+  const handleBootAndFlash = (formData: FormData) => executeAction(() => bootAndFlash(formData));
+  const handleFlashOnly = (formData: FormData) => executeAction(() => flashOnly(formData));
   const handleUpdateHistoryNotes = async (entryId: string, notes: string) => {
     await updateFlashHistoryNotes(entryId, notes);
     await refreshData();

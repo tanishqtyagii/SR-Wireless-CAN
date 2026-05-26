@@ -1,63 +1,39 @@
-
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/Button";
 import { Panel } from "../components/ui/Panel";
 import { StatusPill } from "../components/ui/StatusPill";
-import { fetchFlashLogs, fetchLibrarySnapshot, updateFlashHistoryNotes, updateHexFileNotes } from "../services/api";
+import { fetchFlashHistory, fetchFlashLogs, fetchHexFiles, updateHexFileNotes } from "../services/api";
 import { subscribeToBroadcast } from "../services/ws";
-import { FlashHistoryEntry, HexFile, LibraryGroupedEntry } from "../types";
+import { FlashHistoryEntry, HexFile } from "../types";
 
 const DetailDrawer = lazy(() =>
   import("../components/ui/DetailDrawer").then((module) => ({ default: module.DetailDrawer }))
 );
 
-const FILES_STORAGE_KEY = "sr_library_grouped_entries_v2";
-const ALL_FLASHES_STORAGE_KEY = "sr_library_all_flashes_v2";
-
-function loadPersistedFiles(): LibraryGroupedEntry[] {
-  try {
-    return JSON.parse(localStorage.getItem(FILES_STORAGE_KEY) ?? "[]");
-  } catch {
-    return [];
-  }
-}
-
-function savePersistedFiles(items: LibraryGroupedEntry[]): void {
-  try {
-    localStorage.setItem(FILES_STORAGE_KEY, JSON.stringify(items));
-  } catch {
-    // Ignore quota failures.
-  }
-}
-
-function loadPersistedAllFlashes(): FlashHistoryEntry[] {
-  try {
-    return JSON.parse(localStorage.getItem(ALL_FLASHES_STORAGE_KEY) ?? "[]");
-  } catch {
-    return [];
-  }
-}
-
-function savePersistedAllFlashes(items: FlashHistoryEntry[]): void {
-  try {
-    localStorage.setItem(ALL_FLASHES_STORAGE_KEY, JSON.stringify(items));
-  } catch {
-    // Ignore quota failures.
-  }
-}
-
-let _cachedFiles: LibraryGroupedEntry[] = loadPersistedFiles();
-let _cachedAllFlashes: FlashHistoryEntry[] = loadPersistedAllFlashes();
+let _cachedFiles: HexFile[] = [];
 const _cachedHistoryByFile = new Map<string, FlashHistoryEntry[]>();
 const _cachedLogsByHistory = new Map<string, string[]>();
-const _logFetchInFlight = new Set<string>();
+let _filesPrefetch: Promise<HexFile[]> | null = null;
 
-let _persistedFile: LibraryGroupedEntry | null = null;
+let _persistedFile: HexFile | null = null;
 let _persistedNotes = "";
 
-function formatSize(bytes: number | null | undefined): string {
-  if (bytes == null) return "-";
+function prefetchFiles(): Promise<HexFile[]> {
+  if (!_filesPrefetch) {
+    _filesPrefetch = fetchHexFiles()
+      .then((data) => {
+        _cachedFiles = Array.isArray(data) ? data : [];
+        return _cachedFiles;
+      })
+      .catch(() => _cachedFiles);
+  }
+  return _filesPrefetch;
+}
+
+void prefetchFiles();
+
+function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
@@ -91,491 +67,119 @@ function attachCachedLogs(entries: FlashHistoryEntry[]): FlashHistoryEntry[] {
   });
 }
 
-async function prefetchLogsForEntries(
-  entries: FlashHistoryEntry[],
-  onUpdate?: (entryId: string, logs: string[]) => void
-) {
-  const uncached = entries.filter((e) => !_cachedLogsByHistory.has(e.id) && !_logFetchInFlight.has(e.id));
-  if (uncached.length === 0) return;
-
-  await Promise.allSettled(
-    uncached.map(async (entry) => {
-      _logFetchInFlight.add(entry.id);
-      try {
-        const data = await fetchFlashLogs(entry.id);
-        const logs = data.logs ?? [];
-        _cachedLogsByHistory.set(entry.id, logs);
-        onUpdate?.(entry.id, logs);
-      } catch {
-        // Silently skip failed log fetches.
-      } finally {
-        _logFetchInFlight.delete(entry.id);
-      }
-    })
-  );
-}
-
-const OPERATOR_KEY = "sr_operator_name";
-type SortMode = "newest" | "oldest" | "flashed" | "my-flashes" | "operator-asc" | "name-asc" | "name-desc";
-
-const sortOptions: { value: SortMode; label: string }[] = [
-  { value: "newest", label: "Recent Uploads" },
-  { value: "oldest", label: "Oldest Uploads" },
-  { value: "flashed", label: "Recently Flashed" },
-  { value: "my-flashes", label: "Flashed By Me" },
-  { value: "operator-asc", label: "Last Flashed By (A-Z)" },
-  { value: "name-asc", label: "Name (A-Z)" },
-  { value: "name-desc", label: "Name (Z-A)" },
-];
-
-type PreparedFile = {
-  item: LibraryGroupedEntry;
-  uploadedAtMs: number;
-  lastFlashedAtMs: number;
-  displayNameLower: string;
-  lastFlashedByLower: string;
-};
-
-type PreparedFlash = {
-  item: FlashHistoryEntry;
-  timestampMs: number;
-  operatorLower: string;
-  nameLower: string;
-};
-
-function prepareFileSortData(file: LibraryGroupedEntry): PreparedFile {
-  return {
-    item: file,
-    uploadedAtMs: Date.parse(file.uploadedAt ?? file.lastFlashedAt ?? ""),
-    lastFlashedAtMs: file.lastFlashedAt ? Date.parse(file.lastFlashedAt) : 0,
-    displayNameLower: (file.displayName || file.name).toLowerCase(),
-    lastFlashedByLower: (file.lastFlashedBy || "").toLowerCase(),
-  };
-}
-
-function normalizeLibraryName(value: string | undefined): string {
-  return (value ?? "").trim().toLowerCase();
-}
-
-function buildHistoryCacheKey(file: LibraryGroupedEntry): string {
-  return file.id;
-}
-
-function updateGroupedEntryFromHexFile(entry: LibraryGroupedEntry, updated: HexFile): LibraryGroupedEntry {
-  const hasMatchingVariant = entry.fileVariants?.some((variant) => variant.fileId === updated.id) ?? false;
-  const hasMatchingPrimary = entry.fileId === updated.id;
-
-  if (!hasMatchingVariant && !hasMatchingPrimary) {
-    return entry;
-  }
-
-  return {
-    ...entry,
-    notes: hasMatchingPrimary ? updated.notes : entry.notes,
-    ...(hasMatchingPrimary
-      ? {
-          name: updated.name,
-          displayName: updated.displayName,
-          uploadedAt: updated.uploadedAt,
-          lastFlashedAt: updated.lastFlashedAt,
-          lastFlashedBy: updated.lastFlashedBy,
-          status: updated.status,
-        }
-      : {}),
-    fileVariants: entry.fileVariants?.map((variant) =>
-      variant.fileId === updated.id
-        ? {
-            ...variant,
-            name: updated.name,
-            displayName: updated.displayName,
-            notes: updated.notes,
-            uploadedAt: updated.uploadedAt,
-            lastFlashedAt: updated.lastFlashedAt,
-            lastFlashedBy: updated.lastFlashedBy,
-            status: updated.status,
-          }
-        : variant
-    ),
-  };
-}
-
-function entryMatchesFile(entry: FlashHistoryEntry, file: LibraryGroupedEntry): boolean {
-  const fileIds = file.fileIds?.length ? file.fileIds : file.fileId ? [file.fileId] : [];
-  if (entry.fileId && fileIds.includes(entry.fileId)) {
-    return true;
-  }
-
-  const aliasNames = file.aliasNames?.length ? file.aliasNames : [file.displayName || file.name];
-  return aliasNames.some((alias) => normalizeLibraryName(entry.name) === normalizeLibraryName(alias));
-}
-
-function prepareFlashSortData(entry: FlashHistoryEntry): PreparedFlash {
-  return {
-    item: entry,
-    timestampMs: Date.parse(entry.timestamp),
-    operatorLower: (entry.operator || "").toLowerCase(),
-    nameLower: entry.name.toLowerCase(),
-  };
-}
-
-function SortSelect({ value, onChange }: { value: SortMode; onChange: (v: SortMode) => void }) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
-
-  const currentOption = sortOptions.find((o) => o.value === value) || sortOptions[0];
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 h-8 border border-theme-border bg-theme-panel hover:bg-theme-panel-hover px-3 rounded-full transition-colors shadow-sm focus:outline-none whitespace-nowrap"
-      >
-        <span className="text-xs font-semibold text-theme-text tracking-wide">{currentOption.label}</span>
-        <svg
-          className={`w-3.5 h-3.5 text-theme-text-muted transition-transform ${isOpen ? "rotate-180" : ""}`}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-
-      {isOpen && (
-        <div 
-          className="absolute top-full left-0 mt-2 min-w-[200px] bg-theme-panel border border-theme-border rounded-xl shadow-xl z-50 p-1.5 flex flex-col"
-          onMouseLeave={() => setHoveredIndex(null)}
-        >
-          {/* Animated Background Highlight */}
-          {hoveredIndex !== null && (
-            <div 
-              className="absolute left-1.5 right-1.5 h-[32px] bg-theme-bg shadow-sm border border-theme-border/60 rounded-lg pointer-events-none transition-all duration-150 ease-out z-0"
-              style={{ top: `${6 + hoveredIndex * 32}px` }} 
-            />
-          )}
-
-          {sortOptions.map((opt, i) => {
-            const isSelected = value === opt.value;
-            const isHovered = hoveredIndex === i;
-            return (
-              <button
-                key={opt.value}
-                onMouseEnter={() => setHoveredIndex(i)}
-                onFocus={() => setHoveredIndex(i)}
-                onClick={() => {
-                  onChange(opt.value);
-                  setIsOpen(false);
-                }}
-                className={`flex items-center justify-between w-full text-left px-3 h-[32px] text-[11.5px] font-medium relative z-10 transition-colors rounded-lg ${
-                  isSelected || isHovered ? "text-theme-text" : "text-theme-text-muted"
-                }`}
-              >
-                <span>{opt.label}</span>
-                {isSelected && (
-                  <svg className="w-3.5 h-3.5 text-theme-text" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-                  </svg>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function LibraryPage() {
-  const [files, setFiles] = useState<LibraryGroupedEntry[]>(_cachedFiles);
-  const [filesLoading, setFilesLoading] = useState(() => _cachedFiles.length === 0);
+  const [files, setFiles] = useState<HexFile[]>(_cachedFiles);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<LibraryGroupedEntry | null>(_persistedFile);
-  const [selectedFlashId, setSelectedFlashId] = useState<string | null>(null);
+  const [selectedFile, setSelectedFile] = useState<HexFile | null>(_persistedFile);
   const [drawerNotes, setDrawerNotes] = useState(_persistedNotes);
   const [savingNotes, setSavingNotes] = useState(false);
   const [fileHistory, setFileHistory] = useState<FlashHistoryEntry[]>(
-    _persistedFile ? attachCachedLogs(_cachedHistoryByFile.get(buildHistoryCacheKey(_persistedFile)) ?? []) : []
+    _persistedFile ? attachCachedLogs(_cachedHistoryByFile.get(_persistedFile.id) ?? []) : []
   );
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [logLoadingId, setLogLoadingId] = useState<string | null>(null);
   const drawerNotesRef = useRef<HTMLTextAreaElement>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
 
-  const [showAllFlashes, setShowAllFlashes] = useState(() => {
-    return localStorage.getItem("libraryShowAllFlashes") === "true";
-  });
-  const [allFlashes, setAllFlashes] = useState<FlashHistoryEntry[]>(_cachedAllFlashes);
-  const [allFlashesLoading, setAllFlashesLoading] = useState(() => showAllFlashes && _cachedAllFlashes.length === 0);
-
-  const visibleFlashes = useMemo(() => {
-    return allFlashes.filter((entry) => {
-      if (entry.action) {
-        return entry.action !== "bootload";
-      }
-      if (entry.fileId) {
-        return true;
-      }
-      return entry.name.trim().toLowerCase() !== "bootload";
-    });
-  }, [allFlashes]);
-
-  const [sortMode, setSortMode] = useState<SortMode>(() => {
-    return (localStorage.getItem("librarySortMode") as SortMode) || "newest";
-  });
-
-  useEffect(() => {
-    localStorage.setItem("librarySortMode", sortMode);
-  }, [sortMode]);
-
-  const preparedFiles = useMemo(() => files.map(prepareFileSortData), [files]);
-  const preparedFlashes = useMemo(() => visibleFlashes.map(prepareFlashSortData), [visibleFlashes]);
-
-  const sortedFiles = useMemo(() => {
-    const list = [...preparedFiles];
-    const myName = localStorage.getItem(OPERATOR_KEY) || "";
-    const myNameLower = myName.toLowerCase();
-
-    list.sort((a, b) => {
-      if (sortMode === "newest") {
-        return b.uploadedAtMs - a.uploadedAtMs;
-      } else if (sortMode === "oldest") {
-        return a.uploadedAtMs - b.uploadedAtMs;
-      } else if (sortMode === "flashed") {
-        return b.lastFlashedAtMs - a.lastFlashedAtMs;
-      } else if (sortMode === "my-flashes") {
-        const aIsMine = a.lastFlashedByLower === myNameLower;
-        const bIsMine = b.lastFlashedByLower === myNameLower;
-        if (aIsMine && !bIsMine) return -1;
-        if (!aIsMine && bIsMine) return 1;
-        return b.uploadedAtMs - a.uploadedAtMs;
-      } else if (sortMode === "operator-asc") {
-        const opA = a.lastFlashedByLower;
-        const opB = b.lastFlashedByLower;
-        if (!opA && opB) return 1;
-        if (opA && !opB) return -1;
-        if (!opA && !opB) return b.uploadedAtMs - a.uploadedAtMs;
-        return opA.localeCompare(opB);
-      } else if (sortMode === "name-asc") {
-        return a.displayNameLower.localeCompare(b.displayNameLower);
-      } else if (sortMode === "name-desc") {
-        return b.displayNameLower.localeCompare(a.displayNameLower);
-      }
-      return 0;
-    });
-    return list.map((entry) => entry.item);
-  }, [preparedFiles, sortMode]);
-
-  const sortedFlashes = useMemo(() => {
-    const list = [...preparedFlashes];
-    const myName = localStorage.getItem(OPERATOR_KEY) || "";
-    const myNameLower = myName.toLowerCase();
-
-    list.sort((a, b) => {
-      const timeA = a.timestampMs;
-      const timeB = b.timestampMs;
-
-      if (sortMode === "newest" || sortMode === "flashed") {
-        return timeB - timeA;
-      } else if (sortMode === "oldest") {
-        return timeA - timeB;
-      } else if (sortMode === "my-flashes") {
-        const aIsMine = a.operatorLower === myNameLower;
-        const bIsMine = b.operatorLower === myNameLower;
-        if (aIsMine && !bIsMine) return -1;
-        if (!aIsMine && bIsMine) return 1;
-        return timeB - timeA;
-      } else if (sortMode === "operator-asc") {
-        const opA = a.operatorLower;
-        const opB = b.operatorLower;
-        if (!opA && opB) return 1;
-        if (opA && !opB) return -1;
-        if (!opA && !opB) return timeB - timeA;
-        return opA.localeCompare(opB);
-      } else if (sortMode === "name-asc") {
-        return a.nameLower.localeCompare(b.nameLower);
-      } else if (sortMode === "name-desc") {
-        return b.nameLower.localeCompare(a.nameLower);
-      }
-      return 0;
-    });
-    return list.map((entry) => entry.item);
-  }, [preparedFlashes, sortMode]);
-
-  const renderedFiles = sortedFiles;
-
-  const latestFlashedFileId = useMemo(() => {
-    return renderedFiles.reduce((latest, current) => {
-      if (!current.lastFlashedAt) return latest;
-      if (!latest || new Date(current.lastFlashedAt).getTime() > new Date(latest.lastFlashedAt ?? 0).getTime()) {
-        return current;
-      }
-      return latest;
-    }, null as LibraryGroupedEntry | null)?.id;
-  }, [renderedFiles]);
-
-  const renderedFlashes = sortedFlashes;
-  const latestRenderedFlashId = useMemo(() => {
-    return renderedFlashes.reduce((latest, current) => {
-      if (!latest || new Date(current.timestamp).getTime() > new Date(latest.timestamp).getTime()) {
-        return current;
-      }
-      return latest;
-    }, null as FlashHistoryEntry | null)?.id;
-  }, [renderedFlashes]);
-
-  const handleHexFileNotesSaved = useCallback((updated: HexFile) => {
-    _cachedFiles = _cachedFiles.map((file) => updateGroupedEntryFromHexFile(file, updated));
-    savePersistedFiles(_cachedFiles);
-    setFiles(_cachedFiles);
-    setSelectedFile((prev) => {
-      if (!prev) {
-        return prev;
-      }
-      const next = updateGroupedEntryFromHexFile(prev, updated);
-      _persistedFile = next;
-      return next;
-    });
-    if (selectedFile?.fileId === updated.id) {
-      setDrawerNotes(updated.notes ?? "");
-      _persistedNotes = updated.notes ?? "";
-    }
-  }, [selectedFile?.fileId]);
-
-  const loadLibraryData = useCallback(() => {
-    if (refreshInFlightRef.current) {
+  const loadFiles = (force = false) => {
+    if (refreshInFlightRef.current && !force) {
       return refreshInFlightRef.current;
     }
 
-    if (_cachedFiles.length === 0) {
-      setFilesLoading(true);
-    }
-    if (showAllFlashes && _cachedAllFlashes.length === 0) {
-      setAllFlashesLoading(true);
-    }
-
-    const task = fetchLibrarySnapshot()
+    const task = fetchHexFiles()
       .then((data) => {
-        const nextFiles = Array.isArray(data.grouped) ? data.grouped : [];
-        const nextFlashes = Array.isArray(data.flashes) ? data.flashes : [];
-
+        const nextFiles = Array.isArray(data) ? data : [];
         _cachedFiles = nextFiles;
-        _cachedAllFlashes = nextFlashes;
-        savePersistedFiles(nextFiles);
-        savePersistedAllFlashes(nextFlashes);
-
+        _filesPrefetch = Promise.resolve(nextFiles);
         setFiles(nextFiles);
-        setAllFlashes(nextFlashes);
-        setSelectedFile((prev) => {
-          if (!prev) {
-            return prev;
-          }
-
-          return nextFiles.find((file) => file.id === prev.id) ?? prev;
-        });
-
-        // Prefetch logs for the 20 most recent flash entries in the background
-        const recent = nextFlashes.slice(0, 20);
-        void prefetchLogsForEntries(recent);
       })
-      .catch(() => {
-        setFiles(_cachedFiles);
-        setAllFlashes(_cachedAllFlashes);
-        return { grouped: _cachedFiles, flashes: _cachedAllFlashes };
-      })
+      .catch(() => {})
       .finally(() => {
         refreshInFlightRef.current = null;
-        setFilesLoading(false);
-        setAllFlashesLoading(false);
       });
 
-    refreshInFlightRef.current = task.then(() => undefined);
+    refreshInFlightRef.current = task;
     return task;
-  }, [showAllFlashes]);
+  };
+
+  const loadFileHistory = async (fileId: string) => {
+    setHistoryLoading(true);
+    try {
+      const entries = await fetchFlashHistory({ fileId, limit: 30 });
+      const nextEntries = attachCachedLogs(Array.isArray(entries) ? entries : []);
+      _cachedHistoryByFile.set(fileId, nextEntries);
+      setFileHistory(nextEntries);
+    } catch {
+      setFileHistory(attachCachedLogs(_cachedHistoryByFile.get(fileId) ?? []));
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
 
   useEffect(() => {
-    localStorage.setItem("libraryShowAllFlashes", String(showAllFlashes));
-  }, [showAllFlashes]);
-
-
-  useEffect(() => {
-    void loadLibraryData();
+    if (_cachedFiles.length > 0) {
+      setFiles(_cachedFiles);
+    } else {
+      void prefetchFiles().then((items) => setFiles(items));
+    }
 
     const poll = window.setInterval(() => {
-      void loadLibraryData();
+      void loadFiles(true);
+      if (_persistedFile) {
+        void loadFileHistory(_persistedFile.id);
+      }
     }, 3000);
 
     const unsub = subscribeToBroadcast(() => {
-      void loadLibraryData();
+      void loadFiles(true);
+      if (_persistedFile) {
+        void loadFileHistory(_persistedFile.id);
+      }
     });
 
     return () => {
       window.clearInterval(poll);
       unsub();
     };
-  }, [loadLibraryData]);
+  }, []);
 
   const refresh = () => {
-    void loadLibraryData();
+    void loadFiles(true);
+    if (selectedFile) {
+      void loadFileHistory(selectedFile.id);
+    }
   };
 
-  const openDrawer = (
-    file: LibraryGroupedEntry,
-    options?: { initialHistory?: FlashHistoryEntry[]; selectedFlashId?: string | null }
-  ) => {
+  const openDrawer = (file: HexFile) => {
     _persistedFile = file;
     _persistedNotes = file.notes ?? "";
     setSelectedFile(file);
-    setSelectedFlashId(options?.selectedFlashId ?? null);
     setDrawerNotes(file.notes ?? "");
-
-    let entries: FlashHistoryEntry[];
-    if (options?.initialHistory) {
-      // ALL FLASHES view — show only the clicked flash entry
-      entries = attachCachedLogs(options.initialHistory);
-    } else {
-      // GROUPED view — show all flash attempts for this file
-      const cacheKey = buildHistoryCacheKey(file);
-      entries = attachCachedLogs(visibleFlashes.filter((entry) => entryMatchesFile(entry, file)));
-      _cachedHistoryByFile.set(cacheKey, entries);
-    }
-    setFileHistory(entries);
-
-    // Prefetch logs in background for all displayed entries
-    void prefetchLogsForEntries(entries, (entryId, logs) => {
-      setFileHistory((prev) =>
-        prev.map((e) => (e.id === entryId ? { ...e, logs } : e))
-      );
-    });
+    setFileHistory(attachCachedLogs(_cachedHistoryByFile.get(file.id) ?? []));
+    void loadFileHistory(file.id);
   };
 
   const closeDrawer = () => {
     _persistedFile = null;
     _persistedNotes = "";
     setSelectedFile(null);
-    setSelectedFlashId(null);
     setDrawerNotes("");
     setFileHistory([]);
   };
 
   const saveDrawerNotes = async () => {
-    if (!selectedFile?.fileId) return;
+    if (!selectedFile) return;
     setSavingNotes(true);
     try {
-      const updated = await updateHexFileNotes(selectedFile.fileId, drawerNotes);
-      handleHexFileNotesSaved(updated);
+      const updated = await updateHexFileNotes(selectedFile.id, drawerNotes);
+      _cachedFiles = _cachedFiles.map((file) =>
+        file.id === selectedFile.id ? { ...file, notes: updated.notes } : file
+      );
+      setFiles(_cachedFiles);
+      setSelectedFile((prev) => (prev ? { ...prev, notes: updated.notes } : null));
     } catch {
       // Ignore note-save failures in the drawer.
     } finally {
@@ -583,17 +187,13 @@ export default function LibraryPage() {
     }
   };
 
-  const handleLoad = async (file: LibraryGroupedEntry) => {
-    if (!file.fileId) {
-      return;
-    }
-
+  const handleLoad = async (file: HexFile) => {
     setLoadingId(file.id);
     setLoadError(null);
     try {
       navigate("/", {
         state: {
-          hexFileId: file.fileId,
+          hexFileId: file.id,
           displayName: file.displayName || file.name,
           notes: file.notes || "",
         },
@@ -604,13 +204,9 @@ export default function LibraryPage() {
     }
   };
 
-  const handleDownload = (file: LibraryGroupedEntry) => {
-    if (!file.fileId) {
-      return;
-    }
-
+  const handleDownload = (file: HexFile) => {
     const a = document.createElement("a");
-    a.href = `/api/hex-files/${file.fileId}/content`;
+    a.href = `/api/hex-files/${file.id}/content`;
     a.download = file.displayName || file.name;
     document.body.appendChild(a);
     a.click();
@@ -639,16 +235,16 @@ export default function LibraryPage() {
   };
 
   return (
-    <div className="min-h-screen bg-theme-bg text-theme-text font-sans flex flex-col p-3 sm:p-4 gap-3 sm:gap-4 h-screen overflow-hidden">
-      <header className="flex flex-wrap justify-between items-center gap-2 shrink-0">
-        <div className="flex items-center gap-3 sm:gap-4">
-          <img src="/branding/spartan-logo.png" alt="Spartan Racing" className="h-8 sm:h-10 w-auto object-contain" />
-          <nav className="flex items-center gap-1 h-8 border border-theme-border bg-theme-panel rounded-full p-0.5">
+    <div className="min-h-screen bg-theme-bg text-theme-text font-sans flex flex-col p-4 gap-4 h-screen overflow-hidden">
+      <header className="flex justify-between items-center shrink-0">
+        <div className="flex items-center gap-4">
+          <img src="/branding/spartan-logo.png" alt="Spartan Racing" className="h-10 w-auto object-contain" />
+          <nav className="flex items-center gap-1 border border-theme-border bg-theme-panel rounded-full p-1">
             <button
               onClick={() => navigate("/")}
-              className={`px-3 sm:px-4 h-full flex items-center justify-center text-[11px] font-bold tracking-widest rounded-full transition-colors ${
+              className={`px-4 py-1 text-xs font-bold tracking-wide rounded-full transition-colors ${
                 location.pathname === "/"
-                  ? "bg-theme-text text-theme-bg shadow-sm"
+                  ? "bg-theme-text text-theme-bg"
                   : "text-theme-text-muted hover:text-theme-text"
               }`}
             >
@@ -656,9 +252,9 @@ export default function LibraryPage() {
             </button>
             <button
               onClick={() => navigate("/library")}
-              className={`px-3 sm:px-4 h-full flex items-center justify-center text-[11px] font-bold tracking-widest rounded-full transition-colors ${
+              className={`px-4 py-1 text-xs font-bold tracking-wide rounded-full transition-colors ${
                 location.pathname === "/library"
-                  ? "bg-theme-text text-theme-bg shadow-sm"
+                  ? "bg-theme-text text-theme-bg"
                   : "text-theme-text-muted hover:text-theme-text"
               }`}
             >
@@ -668,7 +264,7 @@ export default function LibraryPage() {
         </div>
         <button
           onClick={refresh}
-          className="h-8 px-3 flex items-center justify-center text-xs font-semibold text-theme-text-muted hover:text-theme-text transition-colors border border-theme-border rounded-full shadow-sm bg-theme-panel hover:bg-theme-panel-hover"
+          className="text-xs text-theme-text-muted hover:text-theme-text transition-colors border border-theme-border px-2.5 py-1.5 rounded-full"
           title="Refresh"
         >
           Refresh
@@ -677,49 +273,11 @@ export default function LibraryPage() {
 
       <div className="flex-1 min-h-0 overflow-hidden">
         <Panel className="h-full bg-theme-panel border border-theme-border shadow-sm flex flex-col">
-          <div className="shrink-0 px-4 sm:px-6 pt-4 sm:pt-5 pb-3 sm:pb-4 border-b border-theme-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
-              <div className="flex items-center justify-between sm:justify-start gap-3 shrink-0">
-                <h2 className="text-sm font-bold text-theme-text tracking-wide whitespace-nowrap">HEX FILE LIBRARY</h2>
-                <span className="text-xs text-theme-text-muted sm:hidden whitespace-nowrap">
-                  {showAllFlashes 
-                    ? `${renderedFlashes.length} flash${renderedFlashes.length !== 1 ? "es" : ""}`
-                    : `${renderedFiles.length} file${renderedFiles.length !== 1 ? "s" : ""}`
-                  }
-                </span>
-              </div>
-              <div className="flex items-center flex-wrap gap-2 sm:gap-4 sm:border-l sm:border-theme-border sm:pl-6">
-                <SortSelect value={sortMode} onChange={setSortMode} />
-                <div className="flex items-center h-8 bg-theme-bg border border-theme-border rounded-full p-0.5 shrink-0 sm:ml-2">
-                  <button
-                    onClick={() => setShowAllFlashes(false)}
-                    className={`px-3 h-full flex items-center whitespace-nowrap text-[10px] font-bold tracking-wider rounded-full transition-colors ${
-                      !showAllFlashes
-                        ? "bg-theme-text text-theme-bg shadow-sm"
-                        : "text-theme-text-muted hover:text-theme-text"
-                    }`}
-                  >
-                    GROUPED
-                  </button>
-                  <button
-                    onClick={() => setShowAllFlashes(true)}
-                    className={`px-3 h-full flex items-center whitespace-nowrap text-[10px] font-bold tracking-wider rounded-full transition-colors ${
-                      showAllFlashes
-                        ? "bg-theme-text text-theme-bg shadow-sm"
-                        : "text-theme-text-muted hover:text-theme-text"
-                    }`}
-                  >
-                    ALL FLASHES
-                  </button>
-                </div>
-              </div>
+          <div className="shrink-0 px-6 pt-5 pb-4 border-b border-theme-border flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-bold text-theme-text tracking-wide">HEX FILE LIBRARY</h2>
             </div>
-            <span className="text-xs text-theme-text-muted hidden sm:inline">
-              {showAllFlashes 
-                ? `${renderedFlashes.length} flash${renderedFlashes.length !== 1 ? "es" : ""}`
-                : `${renderedFiles.length} file${renderedFiles.length !== 1 ? "s" : ""}`
-              }
-            </span>
+            <span className="text-xs text-theme-text-muted">{files.length} file{files.length !== 1 ? "s" : ""}</span>
           </div>
 
           {loadError && (
@@ -728,137 +286,35 @@ export default function LibraryPage() {
             </div>
           )}
 
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            {/* ── Desktop table view ── */}
-            <table className="w-full table-fixed text-sm border-collapse hidden md:table">
-              <thead>
-                <tr className="border-b border-theme-border">
-                  <th className="w-[30%] px-6 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">FILE</th>
-                  <th className="w-[14%] px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">
-                    {showAllFlashes ? "FLASHED BY" : "SIZE"}
-                  </th>
-                  <th className="w-[15%] px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">
-                    {showAllFlashes ? "FLASHED AT" : "UPLOADED"}
-                  </th>
-                  <th className="w-[15%] px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">
-                    {showAllFlashes ? <span className="invisible">LAST FLASHED</span> : "LAST FLASHED"}
-                  </th>
-                  <th className="w-[14%] px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">STATUS</th>
-                  <th className="w-[12%] px-6 py-3" />
-                </tr>
-              </thead>
-              <tbody>
-                  {showAllFlashes ? renderedFlashes.length > 0 ? renderedFlashes.map((entry, i) => {
-                    const isLatest = entry.id === latestRenderedFlashId;
-                    return (
-                    <tr
-                      key={entry.id}
-                      className={`border-b border-theme-border last:border-b-0 hover:bg-theme-bg/50 transition-colors ${
-                        isLatest 
-                          ? "bg-theme-primary/10 relative" 
-                          : i % 2 === 0 ? "" : "bg-theme-bg/20"
-                      }`}
-                    >
-                      <td className="px-6 py-4 relative">
-                        {isLatest && <div className="absolute left-0 top-0 bottom-0 w-1 bg-theme-primary"></div>}
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 bg-theme-bg border border-theme-border rounded flex items-center justify-center shrink-0">
-                            <svg className="w-4 h-4 text-theme-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                            </svg>
-                          </div>
-                          <div className="min-w-0">
-                            <button
-                               className="font-semibold text-theme-text hover:underline underline-offset-2 truncate max-w-[240px] text-left block"
-                               onClick={() => {
-                                  const f = files.find((fileItem) => entryMatchesFile(entry, fileItem)) ?? {
-                                    id: `history:${normalizeLibraryName(entry.name) || entry.id}`,
-                                    fileId: entry.fileId ?? null,
-                                    fileIds: entry.fileId ? [entry.fileId] : [],
-                                    name: entry.name,
-                                    displayName: entry.name,
-                                    aliasNames: [entry.name],
-                                    size: null,
-                                    uploadedAt: entry.timestamp,
-                                    lastFlashedAt: entry.timestamp,
-                                    lastFlashedBy: entry.operator,
-                                    status: entry.status,
-                                    notes: entry.notes,
-                                    hasPayload: Boolean(entry.fileId),
-                                  };
-                                  openDrawer(f, { initialHistory: [entry], selectedFlashId: entry.id });
-                                  void loadLogs(entry.id);
-                                }}
-                            >
-                              {entry.name}
-                            </button>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-4 text-sm text-theme-text-muted whitespace-nowrap">{entry.operator || "-"}</td>
-                      <td
-                        className="px-4 py-4 text-sm text-theme-text-muted whitespace-nowrap"
-                        title={entry.timestamp ? `${new Date(entry.timestamp).toLocaleString("en-US", { timeZone: "America/Los_Angeles" })} PST` : undefined}
-                      >
-                        {formatDateTime(entry.timestamp)}
-                      </td>
-                      <td className="px-4 py-4 text-sm text-transparent whitespace-nowrap select-none" aria-hidden="true">
-                        &nbsp;
-                      </td>
-                      <td className="px-4 py-4">
-                        <StatusPill status={entry.status} size="sm" />
-                      </td>
-                      <td className="px-6 py-4">
-                        {entry.fileId ? (
-                            <div className="flex items-center gap-2 justify-end">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const f = files.find((fileItem) => entryMatchesFile(entry, fileItem) && fileItem.hasPayload);
-                                  if (f) handleDownload(f);
-                                }}
-                                className="p-1.5 hover:text-theme-text hover:bg-theme-bg/50 rounded transition-colors text-theme-text-muted"
-                                title="Download HEX file"
-                              >
-                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                                </svg>
-                              </button>
-                              <Button
-                                variant="secondary"
-                                className="px-3 py-1 text-xs font-semibold"
-                                onClick={() => {
-                                  const f = files.find((fileItem) => entryMatchesFile(entry, fileItem) && fileItem.hasPayload);
-                                  if (f) handleLoad(f);
-                                }}
-                                disabled={loadingId !== null}
-                              >
-                                Load
-                              </Button>
-                            </div>
-                        ) : null}
-                      </td>
-                    </tr>
-                    );
-                  }) : (
-                    <tr>
-                      <td colSpan={6} className="px-6 py-10 text-center text-sm text-theme-text-muted">
-                        {allFlashesLoading ? "" : "No flashes found yet."}
-                      </td>
-                    </tr>
-                  ) : renderedFiles.length > 0 ? renderedFiles.map((file, i) => {
-                    const isLatest = file.id === latestFlashedFileId;
-                    return (
+          <div className="flex-1 min-h-0 overflow-y-auto [content-visibility:auto]">
+            {files.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center gap-2">
+                <svg className="w-10 h-10 text-theme-text-muted opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                </svg>
+                <p className="text-sm text-theme-text-muted">No hex files uploaded yet</p>
+              </div>
+            ) : (
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr className="border-b border-theme-border">
+                    <th className="px-6 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">FILE</th>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">SIZE</th>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">UPLOADED</th>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">LAST FLASHED</th>
+                    <th className="px-4 py-3 text-left text-xs font-bold text-theme-text-muted tracking-wider">STATUS</th>
+                    <th className="px-6 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {files.map((file, i) => (
                     <tr
                       key={file.id}
                       className={`border-b border-theme-border last:border-b-0 hover:bg-theme-bg/50 transition-colors ${
-                        isLatest 
-                          ? "bg-theme-primary/10 relative" 
-                          : i % 2 === 0 ? "" : "bg-theme-bg/20"
+                        i % 2 === 0 ? "" : "bg-theme-bg/20"
                       }`}
                     >
-                      <td className="px-6 py-4 relative">
-                        {isLatest && <div className="absolute left-0 top-0 bottom-0 w-1 bg-theme-primary"></div>}
+                      <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 bg-theme-bg border border-theme-border rounded flex items-center justify-center shrink-0">
                             <svg className="w-4 h-4 text-theme-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -892,179 +348,32 @@ export default function LibraryPage() {
                         <StatusPill status={file.status} size="sm" />
                       </td>
                       <td className="px-6 py-4">
-                        {file.hasPayload ? (
-                          <div className="flex items-center gap-2 justify-end">
-                            <button
-                              onClick={() => handleDownload(file)}
-                              className="p-1.5 text-theme-text-muted hover:text-theme-text border border-theme-border rounded hover:bg-theme-bg transition-colors"
-                              title="Download .hex"
-                            >
-                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                              </svg>
-                            </button>
-                            <Button
-                              variant="secondary"
-                              className="px-3 py-1 text-xs font-semibold"
-                              onClick={() => handleLoad(file)}
-                              isLoading={loadingId === file.id}
-                              disabled={loadingId !== null}
-                            >
-                              Load
-                            </Button>
-                          </div>
-                        ) : null}
+                        <div className="flex items-center gap-2 justify-end">
+                          <button
+                            onClick={() => handleDownload(file)}
+                            className="p-1.5 text-theme-text-muted hover:text-theme-text border border-theme-border rounded hover:bg-theme-bg transition-colors"
+                            title="Download .hex"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                            </svg>
+                          </button>
+                          <Button
+                            variant="secondary"
+                            className="px-3 py-1 text-xs font-semibold"
+                            onClick={() => handleLoad(file)}
+                            isLoading={loadingId === file.id}
+                            disabled={loadingId !== null}
+                          >
+                            Load
+                          </Button>
+                        </div>
                       </td>
                     </tr>
-                    );
-                  }) : (
-                    <tr>
-                      <td colSpan={6} className="px-6 py-10 text-center text-sm text-theme-text-muted">
-                        {filesLoading ? "" : "No HEX files found yet."}
-                      </td>
-                    </tr>
-                  )}
+                  ))}
                 </tbody>
               </table>
-
-            {/* ── Mobile card view ── */}
-            <div className="md:hidden divide-y divide-theme-border">
-              {showAllFlashes ? renderedFlashes.length > 0 ? renderedFlashes.map((entry) => {
-                const isLatest = entry.id === latestRenderedFlashId;
-                return (
-                  <div
-                    key={entry.id}
-                    className={`px-4 py-3 relative ${
-                      isLatest ? "bg-theme-primary/10" : ""
-                    }`}
-                    onClick={() => {
-                      const f = files.find((fileItem) => entryMatchesFile(entry, fileItem)) ?? {
-                        id: `history:${normalizeLibraryName(entry.name) || entry.id}`,
-                        fileId: entry.fileId ?? null,
-                        fileIds: entry.fileId ? [entry.fileId] : [],
-                        name: entry.name,
-                        displayName: entry.name,
-                        aliasNames: [entry.name],
-                        size: null,
-                        uploadedAt: entry.timestamp,
-                        lastFlashedAt: entry.timestamp,
-                        lastFlashedBy: entry.operator,
-                        status: entry.status,
-                        notes: entry.notes,
-                        hasPayload: Boolean(entry.fileId),
-                      };
-                      openDrawer(f, { initialHistory: [entry], selectedFlashId: entry.id });
-                      void loadLogs(entry.id);
-                    }}
-                  >
-                    {isLatest && <div className="absolute left-0 top-0 bottom-0 w-1 bg-theme-primary"></div>}
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0 flex-1">
-                        <div className="font-semibold text-sm text-theme-text truncate">{entry.name}</div>
-                        <div className="text-xs text-theme-text-muted mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                          {entry.operator && <span>{entry.operator}</span>}
-                          <span>{formatDateTime(entry.timestamp)}</span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0 pt-0.5">
-                        <StatusPill status={entry.status} size="sm" />
-                      </div>
-                    </div>
-                    {entry.fileId && (
-                      <div className="flex items-center gap-2 mt-2">
-                        <Button
-                          variant="secondary"
-                          className="px-3 py-1 text-xs font-semibold"
-                          onClick={(e: React.MouseEvent) => {
-                            e.stopPropagation();
-                            const f = files.find((fileItem) => entryMatchesFile(entry, fileItem) && fileItem.hasPayload);
-                            if (f) handleLoad(f);
-                          }}
-                          disabled={loadingId !== null}
-                        >
-                          Load
-                        </Button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const f = files.find((fileItem) => entryMatchesFile(entry, fileItem) && fileItem.hasPayload);
-                            if (f) handleDownload(f);
-                          }}
-                          className="p-1.5 hover:text-theme-text hover:bg-theme-bg/50 rounded transition-colors text-theme-text-muted"
-                          title="Download HEX file"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                          </svg>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                );
-              }) : (
-                <div className="px-4 py-10 text-center text-sm text-theme-text-muted">
-                  {allFlashesLoading ? "" : "No flashes found yet."}
-                </div>
-              ) : renderedFiles.length > 0 ? renderedFiles.map((file) => {
-                const isLatest = file.id === latestFlashedFileId;
-                return (
-                  <div
-                    key={file.id}
-                    className={`px-4 py-3 relative ${
-                      isLatest ? "bg-theme-primary/10" : ""
-                    }`}
-                    onClick={() => openDrawer(file)}
-                  >
-                    {isLatest && <div className="absolute left-0 top-0 bottom-0 w-1 bg-theme-primary"></div>}
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0 flex-1">
-                        <div className="font-semibold text-sm text-theme-text truncate">{file.displayName || file.name}</div>
-                        <div className="text-xs text-theme-text-muted mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                          <span>{formatSize(file.size)}</span>
-                          <span>·</span>
-                          <span>{formatDate(file.uploadedAt)}</span>
-                          {file.lastFlashedAt && (
-                            <>
-                              <span>·</span>
-                              <span>Flashed {formatDate(file.lastFlashedAt)}</span>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0 pt-0.5">
-                        <StatusPill status={file.status} size="sm" />
-                      </div>
-                    </div>
-                    {file.hasPayload && (
-                      <div className="flex items-center gap-2 mt-2">
-                        <Button
-                          variant="secondary"
-                          className="px-3 py-1 text-xs font-semibold"
-                          onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleLoad(file); }}
-                          isLoading={loadingId === file.id}
-                          disabled={loadingId !== null}
-                        >
-                          Load
-                        </Button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDownload(file); }}
-                          className="p-1.5 text-theme-text-muted hover:text-theme-text hover:bg-theme-bg/50 rounded transition-colors"
-                          title="Download .hex"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                          </svg>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                );
-              }) : (
-                <div className="px-4 py-10 text-center text-sm text-theme-text-muted">
-                  {filesLoading ? "" : "No HEX files found yet."}
-                </div>
-              )}
-            </div>
+            )}
           </div>
         </Panel>
       </div>
@@ -1084,14 +393,10 @@ export default function LibraryPage() {
                     <span className="text-xs text-theme-text-muted font-mono truncate">{selectedFile.name}</span>
                   </div>
                 )}
-                {selectedFile.aliasNames && selectedFile.aliasNames.length > 1 && (
-                  <div className="flex items-start justify-between gap-3">
-                    <span className="text-xs text-theme-text-muted shrink-0">Also seen as</span>
-                    <span className="text-right text-xs text-theme-text max-w-[70%]">
-                      {selectedFile.aliasNames.filter((name) => name !== (selectedFile.displayName || selectedFile.name)).join(", ")}
-                    </span>
-                  </div>
-                )}
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-xs text-theme-text-muted shrink-0">ID</span>
+                  <span className="text-xs font-mono text-theme-text-muted">{selectedFile.id}</span>
+                </div>
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="text-xs text-theme-text-muted shrink-0">Size</span>
                   <span className="text-xs text-theme-text">{formatSize(selectedFile.size)}</span>
@@ -1116,38 +421,35 @@ export default function LibraryPage() {
                 )}
               </div>
 
-              {selectedFile.hasPayload && !selectedFlashId && (
-                <>
-                  <div className="border-t border-theme-border" />
+              <div className="border-t border-theme-border" />
 
-                  <div className="flex flex-col gap-2">
-                    <label htmlFor="drawer-notes" className="text-xs font-bold text-theme-text-muted tracking-wider">FILE NOTES</label>
-                    <textarea
-                      id="drawer-notes"
-                      ref={drawerNotesRef}
-                      value={drawerNotes}
-                      onChange={(e) => setDrawerNotes(e.target.value)}
-                      rows={3}
-                      className="w-full bg-theme-bg border border-theme-border text-theme-text text-sm px-3 py-2 rounded resize-none focus:outline-none focus:ring-1 focus:ring-theme-primary placeholder:text-theme-text-muted placeholder:opacity-40"
-                      placeholder="Add notes..."
-                    />
-                    <Button
-                      variant="secondary"
-                      className="self-end px-3 py-1 text-xs font-semibold"
-                      onClick={saveDrawerNotes}
-                      isLoading={savingNotes}
-                    >
-                      Save
-                    </Button>
-                  </div>
+              <div className="flex flex-col gap-2">
+                <label htmlFor="drawer-notes" className="text-xs font-bold text-theme-text-muted tracking-wider">NOTES</label>
+                <textarea
+                  id="drawer-notes"
+                  ref={drawerNotesRef}
+                  value={drawerNotes}
+                  onChange={(e) => setDrawerNotes(e.target.value)}
+                  rows={3}
+                  className="w-full bg-theme-bg border border-theme-border text-theme-text text-sm px-3 py-2 rounded resize-none focus:outline-none focus:ring-1 focus:ring-theme-primary placeholder:text-theme-text-muted placeholder:opacity-40"
+                  placeholder="Add notes..."
+                />
+                <Button
+                  variant="secondary"
+                  className="self-end px-3 py-1 text-xs font-semibold"
+                  onClick={saveDrawerNotes}
+                  isLoading={savingNotes}
+                >
+                  Save
+                </Button>
+              </div>
 
-                  <div className="border-t border-theme-border" />
-                </>
-              )}
+              <div className="border-t border-theme-border" />
 
               <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs font-bold text-theme-text-muted tracking-wider">FLASH LOG</p>
+                  {historyLoading && <span className="text-[11px] text-theme-text-muted">Refreshing...</span>}
                 </div>
                 {fileHistory.length === 0 ? (
                   <div className="rounded border border-theme-border bg-theme-bg px-3 py-2 text-xs text-theme-text-muted">
@@ -1155,135 +457,75 @@ export default function LibraryPage() {
                   </div>
                 ) : (
                   fileHistory.map((entry) => (
-                    <FlashEntryCard
-                      key={entry.id}
-                      entry={entry}
-                      logLoadingId={logLoadingId}
-                      onLoadLogs={loadLogs}
-                      onNotesUpdated={(entryId, notes) => {
-                        setFileHistory((prev) =>
-                          prev.map((e) => (e.id === entryId ? { ...e, notes } : e))
-                        );
-                      }}
-                    />
+                    <div key={entry.id} className="flex flex-col gap-2 rounded border border-theme-border bg-theme-bg p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-theme-text-muted">
+                          <span className="font-mono text-theme-text">{entry.id}</span>
+                          <span className="mx-1.5 opacity-50">&middot;</span>
+                          {new Date(entry.timestamp).toLocaleString("en-US", {
+                            timeZone: "America/Los_Angeles",
+                            month: "short",
+                            day: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })} PST
+                          {entry.operator && <span className="ml-1.5 opacity-70">&middot; {entry.operator}</span>}
+                        </span>
+                        <StatusPill status={entry.status} size="sm" />
+                      </div>
+                      {entry.logs ? (
+                        <div className="max-h-32 overflow-y-auto rounded border border-theme-border bg-theme-panel p-2">
+                          {entry.logs.map((line, index) => (
+                            <div
+                              key={`${entry.id}-${index}`}
+                              className="text-xs font-mono text-theme-text-muted leading-relaxed whitespace-pre-wrap"
+                            >
+                              {line}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <Button
+                          variant="secondary"
+                          className="self-start px-2.5 py-1 text-[11px] font-semibold"
+                          onClick={() => void loadLogs(entry.id)}
+                          isLoading={logLoadingId === entry.id}
+                        >
+                          Load logs
+                        </Button>
+                      )}
+                    </div>
                   ))
                 )}
               </div>
 
               <div className="border-t border-theme-border" />
 
-              {selectedFile.hasPayload ? (
-                <div className="flex items-center gap-3">
-                  <Button
-                    variant="primary"
-                    className="flex-1 text-xs font-semibold"
-                    onClick={() => handleLoad(selectedFile)}
-                    isLoading={loadingId === selectedFile.id}
-                    disabled={loadingId !== null}
-                  >
-                    Load into Flash
-                  </Button>
-                  <button
-                    onClick={() => handleDownload(selectedFile)}
-                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-theme-text-muted hover:text-theme-text border border-theme-border rounded hover:bg-theme-bg transition-colors"
-                    title="Download .hex"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                    </svg>
-                    Download
-                  </button>
-                </div>
-              ) : null}
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="primary"
+                  className="flex-1 text-xs font-semibold"
+                  onClick={() => handleLoad(selectedFile)}
+                  isLoading={loadingId === selectedFile.id}
+                  disabled={loadingId !== null}
+                >
+                  Load into Flash
+                </Button>
+                <button
+                  onClick={() => handleDownload(selectedFile)}
+                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-theme-text-muted hover:text-theme-text border border-theme-border rounded hover:bg-theme-bg transition-colors"
+                  title="Download .hex"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                  </svg>
+                  Download
+                </button>
+              </div>
             </div>
           )}
         </DetailDrawer>
       </Suspense>
-    </div>
-  );
-}
-
-
-
-function FlashEntryCard({
-  entry,
-  logLoadingId,
-  onLoadLogs,
-  onNotesUpdated,
-}: {
-  entry: FlashHistoryEntry;
-  logLoadingId: string | null;
-  onLoadLogs: (id: string) => void;
-  onNotesUpdated: (entryId: string, notes: string) => void;
-}) {
-  const [notes, setNotes] = useState(entry.notes ?? "");
-  const [savedNotes, setSavedNotes] = useState(entry.notes ?? "");
-
-  useEffect(() => {
-    setNotes(entry.notes ?? "");
-    setSavedNotes(entry.notes ?? "");
-  }, [entry.id, entry.notes]);
-
-  const handleBlur = async () => {
-    if (notes.trim() === savedNotes.trim()) return;
-    try {
-      await updateFlashHistoryNotes(entry.id, notes);
-      setSavedNotes(notes);
-      onNotesUpdated(entry.id, notes);
-    } catch {
-      setNotes(savedNotes);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-2 rounded border border-theme-border bg-theme-bg p-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="text-xs font-semibold text-theme-text truncate">{entry.name}</div>
-          <span className="text-[11px] text-theme-text-muted">
-            {new Date(entry.timestamp).toLocaleString("en-US", {
-              timeZone: "America/Los_Angeles",
-              month: "short",
-              day: "numeric",
-              hour: "numeric",
-              minute: "2-digit",
-            })} PST
-            {entry.operator && <span className="ml-1.5 opacity-70">&middot; {entry.operator}</span>}
-          </span>
-        </div>
-        <StatusPill status={entry.status} size="sm" />
-      </div>
-
-      <textarea
-        value={notes}
-        onChange={(e) => setNotes(e.target.value)}
-        onBlur={handleBlur}
-        rows={notes ? undefined : 1}
-        placeholder="Add notes for this flash..."
-        className="w-full bg-theme-panel border border-theme-border text-theme-text px-3 py-2 text-xs rounded focus:outline-none focus:ring-1 focus:ring-theme-primary shadow-sm placeholder:text-theme-text-muted placeholder:opacity-50 resize-none transition-colors h-9"
-      />
-
-      {entry.logs ? (
-        <div className="max-h-32 overflow-y-auto rounded border border-theme-border bg-theme-panel p-2">
-          {entry.logs.map((line, index) => (
-            <div
-              key={`${entry.id}-${index}`}
-              className="text-xs font-mono text-theme-text-muted leading-relaxed whitespace-pre-wrap"
-            >
-              {line}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <Button
-          variant="secondary"
-          className="self-start px-2.5 py-1 text-[11px] font-semibold"
-          onClick={() => void onLoadLogs(entry.id)}
-          isLoading={logLoadingId === entry.id}
-        >
-          Load logs
-        </Button>
-      )}
     </div>
   );
 }

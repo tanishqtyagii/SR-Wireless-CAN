@@ -1,4 +1,5 @@
-flask>=3.0
-flask-cors>=4.0
-python-can>=4.4
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+python-can>=4.3
 intelhex>=2.3
